@@ -20,6 +20,13 @@ class Task:
             return date_obj
         return date_obj.strftime("%Y-%m-%d %H:%M:%S")
     
+    def DisplayTask(self):
+        print("\n" + "-"*50)
+        print(f"Task: {self.title}")
+        print("-"*50)
+        print(f"Status: {self.Status} \nAssigned to: {self.PersonInCharge} \nCreationTime: {self.FormatDate(self.CreationDate)} \nDue: {self.DueDate} \nCreated by: {self.Creator} \nEditors: {self.Editors} \nAdditional Info: {self.AdditionalInfo}")
+        print("\n" + "-"*50)
+    
     def __str__(self):
         # Reformat CreationDate
         CreationDateReformat = self.FormatDate(self.CreationDate)
@@ -29,10 +36,14 @@ class Task:
 class KanbanBoard:
     def __init__(self):
         self.tasks = []
+        self.ValidStatus = ["To-Do", "In Progress", "Waiting Review", "Finished"]
 
     def AddTask(self, Title, Status, PersonInCharge, DueDate, Creator, AdditionalInfo):
-        self.tasks.append(Task(Title, Status, PersonInCharge, DueDate, Creator, AdditionalInfo))
-        print(f"Added: {Title}")
+        if Status in self.ValidStatus:
+            self.tasks.append(Task(Title, Status, PersonInCharge, DueDate, Creator, AdditionalInfo))
+            print(f"Added: {Title}")
+        else:
+            print("Add Task Failed: Status is not valid")
 
     def EditTask(self, index, Editor, NewTitle=None, NewStatus=None, NewPersonInCharge=None, NewDueDate=None, NewAdditionalInfo=None):
         try:
@@ -42,7 +53,10 @@ class KanbanBoard:
             if NewTitle:
                 task.title = NewTitle
             if NewStatus:
-                task.Status = NewStatus
+                if NewStatus in self.ValidStatus:
+                    task.Status = NewStatus
+                else:
+                    print("Edit Task Failed: Status is not valid")
             if NewPersonInCharge:
                 task.PersonInCharge = NewPersonInCharge
             if NewDueDate:
@@ -62,26 +76,23 @@ class KanbanBoard:
             print("Task not found.")
 
     def DisplayBoard(self):
-        print("\nKanban Board:")
-        for idx, task in enumerate(self.tasks):
-            print(f"{idx + 1}: {task}")
+        # Sort tasks by due date
+        sorted_tasks = sorted(self.tasks, key=lambda x: x.DueDate)
 
-if __name__ == "__main__":
-    kanban_board = KanbanBoard()
-    kanban_board.AddTask("Implement user login", "In Progress", "Alice", "2025-12-31", "Bob", "User should be able to log in")
-    kanban_board.AddTask("Fix bugs in API", "To Do", "Charlie", "2025-12-20", "David", "Fix all known bugs")
-    kanban_board.DisplayBoard()
+        # Group tasks by status
+        grouped_tasks = {status: [] for status in self.ValidStatus}
 
-    # Edit a task
-    kanban_board.EditTask(0, "Roland", NewStatus="Completed", NewAdditionalInfo="User login implemented successfully")
-    kanban_board.DisplayBoard()
+        for task in sorted_tasks:
+            grouped_tasks[task.Status].append(task)
 
-    kanban_board.EditTask(0, "John", NewStatus="Completed", NewAdditionalInfo="User login implemented successfully")
-    kanban_board.DisplayBoard()
+        print("\n" + "-"*50)
+        print(f"{'Kanban Board':^50}")
+        print("-"*50)
 
-    kanban_board.EditTask(0, "Roland", NewStatus="Completed", NewAdditionalInfo="User login implemented successfully")
-    kanban_board.DisplayBoard()
+        for status in self.ValidStatus:
+            if grouped_tasks[status]: 
+                print(f"\n{status.upper()}:")
+                for task in grouped_tasks[status]:
+                    print(f" - {task.title} (Due: {task.DueDate}, Assigned to: {task.PersonInCharge})")
 
-    # Delete a task
-    kanban_board.DelTask(1)
-    kanban_board.DisplayBoard()
+        print("\n" + "-"*50)

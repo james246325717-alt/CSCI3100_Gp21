@@ -132,7 +132,7 @@ def interactive_menu(store: str):
             print("Invalid choice. Please enter a number from the menu.")
 
 
-***
+"""
 def main(argv=None):
         try:
             interactive_menu("~/.kanban/board.json")
@@ -142,4 +142,4 @@ def main(argv=None):
 
 if __name__ == "__main__":
     main()
-***
+"""

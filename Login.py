@@ -1,4 +1,5 @@
 import Database
+# import CLI
 
 
 LOGIN_PAGE = """
@@ -12,10 +13,13 @@ Choose an option by number:
 
 HELP_TEXT = """
 Quick help:
-
+- Register: enter your phone, name, position, and a password (typed twice).
+- Log in: use your phone number and password.
 """
 
 def Login():
+
+    Database.InitDB()
 
     while True:
         print(LOGIN_PAGE.strip())
@@ -28,13 +32,22 @@ def Login():
         elif choice == "1":
             # Login
             PhoneNo = int(input("Phone number: ").strip())
+            Password = input("Password: ").strip()
+            User = Database.ValidateLogin(PhoneNo, Password)
+            if User:
+                print(f"Login successfully.")
+                # CLI.interactive_menu("~/.kanban/board.json")
+                return
+            else:
+                print("Invalid phone number or password, or your account is inactive.")
 
         elif choice == "2":
             # Register
             PhoneNo = int(input("Phone number: ").strip())
             Name = input("Name: ").strip()
             Position = input("Position: ").strip()
-            Database.CreateUser(PhoneNo, Name, Position)
+            Password = PasswordInput()
+            Database.CreateUser(PhoneNo, Name, Position, Password)
             print(Database.GetUserByPhone(PhoneNo))
 
         elif choice == "h":
@@ -43,6 +56,17 @@ def Login():
         else:
             print("Invalid choice. Please enter a number from the menu.")
 
+def PasswordInput():
+    while True:
+        pw1 = input("Password: ").strip()
+        pw2 = input("Confirm password: ").strip()
+        if pw1 != pw2:
+            print("Passwords do not match. Please try again.")
+            continue
+        if len(pw1) < 8:
+            print("Password too short (min 8 chars). Please try again.")
+            continue
+        return pw1
 
 # """
 def main(argv=None):

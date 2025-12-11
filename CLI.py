@@ -42,6 +42,9 @@ def interactive_menu(store: str):
         elif choice == "2":
             #Add task
             Title = input("Title: ").strip()
+            if not Title:
+                print("Title cannot be empty.")
+                continue
             try:
                 StatusInput = int(input("Status (1: To-Do 2: In Progress 3: Waiting Review 4: Finished): ").strip())
                 if StatusInput == 1:
@@ -59,17 +62,21 @@ def interactive_menu(store: str):
                 print("Please enter a valid number.")
                 continue
             PersonInCharge = input("Person in charge: ").strip()
-            DueDateInput = input("Due date (YYYY-MM-DD): ").strip()
-            parts = DueDateInput.split("-")
-            if (len(parts) == 3 and
-                parts[0].isdigit() and len(parts[0]) == 4 and  # Year
-                parts[1].isdigit() and len(parts[1]) == 2 and  # Month
-                parts[2].isdigit() and len(parts[2]) == 2):    # Day
-                DueDate = DueDateInput
-            else:
-                print("Invalid date format.")
-                continue
+            DueDateInput = input("Due date (YYYY-MM-DD): ").strip() 
+            if DueDateInput:
+                parts = DueDateInput.split("-")
+                if (len(parts) == 3 and
+                    parts[0].isdigit() and len(parts[0]) == 4 and  # Year
+                    parts[1].isdigit() and len(parts[1]) == 2 and  # Month
+                    parts[2].isdigit() and len(parts[2]) == 2):    # Day
+                    DueDate = DueDateInput
+                else:
+                    print("Invalid date format.")
+                    continue
             Creator = input("Creator: ").strip()
+            if not Creator or not str(Creator).strip():
+                print("Creator cannot be empty.")
+                continue
             AdditionalInfo = input("Additional information: ").strip()
             board.AddTask(Title, Status, PersonInCharge, DueDate, Creator, AdditionalInfo)
 
@@ -81,6 +88,9 @@ def interactive_menu(store: str):
                 print("Please enter a valid number.")
                 continue
             Editor = input("Name of Editor: ").strip()
+            if not Editor or not str(Editor).strip():
+                print("Editor cannot be empty.")
+                continue
             StatusInput = (input("New status (1: To-Do 2: In Progress 3: Waiting Review 4: Finished Blank: Cancel): ").strip()) or None
             if StatusInput == None:
                 Status = None
@@ -108,6 +118,9 @@ def interactive_menu(store: str):
 
             TaskID = int(input("Task ID: ").strip()) - 1
             Editor = input("Name of Editor: ").strip()
+            if not Editor or not str(Editor).strip():
+                print("Editor cannot be empty.")
+                continue
             Title = input("New title (blank to skip): ").strip() or None
             StatusInput = (input("New status (1: To-Do 2: In Progress 3: Waiting Review 4: Finished Blank: Skip): ").strip()) or None
             if StatusInput == None:
@@ -130,7 +143,7 @@ def interactive_menu(store: str):
                     print("Please enter a valid number.")
                     continue
             PersonInCharge = input("New person in charge (blank to skip): ").strip() or None
-            DueDateInput = input("New due date (YYYY-MM-DD) (blak to skip): ").strip() or None
+            DueDateInput = input("New due date (YYYY-MM-DD) (blank to skip): ").strip() or None
             if DueDateInput == None:
                 DueDate = None
             else:
@@ -170,7 +183,7 @@ def interactive_menu(store: str):
             try:
                 board.tasks[TaskID].DisplayTask()
             except(IndexError):
-                print("Task not found, 6.")
+                print("Task not found.")
         
         elif choice == "7":
             #Advise

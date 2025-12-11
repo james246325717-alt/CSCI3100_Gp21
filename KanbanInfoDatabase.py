@@ -55,6 +55,7 @@ def EditTask(TaskID, NewTitle, NewStatus, NewPersonInCharge, NewDueDate, Editors
     Connection.close()
 
 def GetAllTasks():
+    #For later testing
     Connection = sqlite3.connect(DB_PATH)
     Query = Connection.execute("SELECT * FROM KANBAN")
     Data = Query.fetchall()
@@ -66,5 +67,11 @@ def GetTaskByID(TaskID):
     Query = Connection.execute("SELECT * FROM KANBAN WHERE ID = ?", (TaskID,))
     Data = Query.fetchone()
     Connection.close()
-    return DisplayData(Data)
+    return [Data[0], Data[1], Data[2], Data[3], Data[4], Data[5], Data[6], Data[7], Data[8]]
 
+def CountTasks():
+    connection = sqlite3.connect(DB_PATH)
+    query = connection.execute("SELECT COUNT(*) FROM KANBAN")
+    count = query.fetchone()[0]
+    connection.close()
+    return count

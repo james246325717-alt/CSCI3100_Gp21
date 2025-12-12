@@ -27,6 +27,7 @@ def FormatDate(date_obj):
     return date_obj.strftime("%Y-%m-%d %H:%M:%S")
 
 def DisplayData(row) -> dict:
+    #For testing only, not used
     if row is None:
         return None
     return {
@@ -60,12 +61,11 @@ def EditTask(TaskID, NewTitle, NewStatus, NewPersonInCharge, NewDueDate, Editors
     Connection.close()
 
 def GetAllTasks():
-    #For later testing
     Connection = sqlite3.connect(DB_PATH)
     Query = Connection.execute("SELECT * FROM KANBAN")
     Data = Query.fetchall()
     Connection.close()
-    return [DisplayData(Datum) for Datum in Data]
+    return [[Datum[0], Datum[1], Datum[2], Datum[3], Datum[4], Datum[5], Datum[6], Datum[7], Datum[8]] for Datum in Data]
 
 def GetTaskByID(TaskID):
     Connection = sqlite3.connect(DB_PATH)
@@ -73,10 +73,3 @@ def GetTaskByID(TaskID):
     Data = Query.fetchone()
     Connection.close()
     return [Data[0], Data[1], Data[2], Data[3], Data[4], Data[5], Data[6], Data[7], Data[8]]
-
-def CountTasks():
-    connection = sqlite3.connect(DB_PATH)
-    query = connection.execute("SELECT COUNT(*) FROM KANBAN")
-    count = query.fetchone()[0]
-    connection.close()
-    return count

@@ -1,18 +1,17 @@
 from datetime import datetime as dt
 import KanbanInfoDatabase as kdb
+
 class Task:
-    def __init__(self, Title, Status, PersonInCharge, DueDate, Creator, AdditionalInfo,  CreationDate = None):
+    def __init__(self, Title, Status, PersonInCharge, DueDate, Creator, AdditionalInfo,  CreationDate = None, Editors = None, ID = None):
         self.title = Title
         self.Status = Status
         self.PersonInCharge = PersonInCharge
-        if CreationDate == None:
-            self.CreationDate = dt.now()
-        else:
-            self.CreationDate = CreationDate
+        self.CreationDate = dt.now() if CreationDate == None else CreationDate
         self.DueDate = DueDate
         self.Creator = Creator
-        self.Editors = []
+        self.Editors = Editors
         self.AdditionalInfo = AdditionalInfo
+        self.ID = ID
 
     # Format date to prevent showing microseconds
     def FormatDate(self, date_obj):
@@ -22,7 +21,7 @@ class Task:
     
     def DisplayTask(self):
         print("\n" + "-"*50)
-        print(f"Task: {self.title}")
+        print(f"Task {self.ID}: {self.title}")
         print("-"*50)
         print(f"Status: {self.Status} \nAssigned to: {self.PersonInCharge} \nCreationTime: {self.FormatDate(self.CreationDate)} \nDue: {self.DueDate} \nCreated by: {self.Creator} \nEditors: {self.Editors} \nAdditional Info: {self.AdditionalInfo}")
         print("\n" + "-"*50)
@@ -35,19 +34,12 @@ class Task:
 
 class KanbanBoard:
     def __init__(self):
-        self.tasks = []
         kdb.InitDB()
-        DataCount = kdb.CountTasks()
-        for i in range(DataCount):
-            temp = kdb.GetTaskByID(i+1)
-            task = Task(temp[1], temp[2], temp[3], temp[5], temp[6], temp[8], temp[4])
-            self.tasks.append(task)
         self.ValidStatus = ["To-Do", "In Progress", "Waiting Review", "Finished"]
 
     def AddTask(self, Title, Status, PersonInCharge, DueDate, Creator, AdditionalInfo):
         if Status in self.ValidStatus:
             task = Task(Title, Status, PersonInCharge, DueDate, Creator, AdditionalInfo)
-            self.tasks.append(task)
             kdb.AddTask(Title, Status, PersonInCharge, task.CreationDate, DueDate, Creator, AdditionalInfo)
             print(f"Added: {Title}")
         else:
@@ -55,8 +47,9 @@ class KanbanBoard:
 
     def EditTask(self, index, Editor, NewTitle=None, NewStatus=None, NewPersonInCharge=None, NewDueDate=None, NewAdditionalInfo=None):
         try:
-            task = self.tasks[index]
-            task.Editors.append(Editor)  # Track who edited the task
+            Temp = kdb.GetTaskByID(index)
+            task = Task(Temp[1], Temp[2], Temp[3], Temp[5], Temp[6], Temp[8], Temp[4])
+            task.Editors = Editor
             
             if NewTitle:
                 task.title = NewTitle
@@ -71,20 +64,27 @@ class KanbanBoard:
                 task.DueDate = NewDueDate
             if NewAdditionalInfo:
                 task.AdditionalInfo = NewAdditionalInfo
+            kdb.EditTask(index, task.title, task.Status, task.PersonInCharge, task.DueDate, task.Editors, task.AdditionalInfo)
             print(f"Task updated: {task.title}")
         except IndexError:
             print("Task not found.")
 
     def DelTask(self, index):
         try:
-            removed_task = self.tasks.pop(index)
+            Temp = kdb.GetTaskByID(index)
+            removed_task = Task(Temp[1], Temp[2], Temp[3], Temp[5], Temp[6], Temp[8], Temp[4])
+            kdb.DelTask(index)
             print(f"Deleted: {removed_task.title}")
         except IndexError:
             print("Task not found.")
 
     def DisplayBoard(self):
+        temp = kdb.GetAllTasks()
+        tasks = []
+        for i in temp:
+            tasks.append(Task(i[1], i[2], i[3], i[5], i[6], i[8], i[4], i[7], i[0]))
         # Sort tasks by due date
-        sorted_tasks = sorted(self.tasks, key=lambda x: x.DueDate)
+        sorted_tasks = sorted(tasks, key=lambda x: x.DueDate)
 
         # Group tasks by status
         grouped_tasks = {status: [] for status in self.ValidStatus}
@@ -100,6 +100,6 @@ class KanbanBoard:
             if grouped_tasks[status]: 
                 print(f"\n{status.upper()}:")
                 for task in grouped_tasks[status]:
-                    print(f" - Task {self.tasks.index(task) + 1}: {task.title} (Due: {task.DueDate}, Assigned to: {task.PersonInCharge})")
+                    print(f" - Task {task.ID}: {task.title} (Due: {task.DueDate}, Assigned to: {task.PersonInCharge})")
 
         print("\n" + "-"*50)

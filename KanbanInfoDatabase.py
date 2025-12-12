@@ -21,6 +21,11 @@ def InitDB():
     Connection.commit()
     Connection.close()
 
+def FormatDate(date_obj):                
+    if isinstance(date_obj, str):
+        return date_obj
+    return date_obj.strftime("%Y-%m-%d %H:%M:%S")
+
 def DisplayData(row) -> dict:
     if row is None:
         return None
@@ -29,7 +34,7 @@ def DisplayData(row) -> dict:
         "Title": row[1],
         "Status": row[2],
         "Person in Charge": row[3],
-        "Creation Date": row[4],
+        "Creation Date": (row[4]),
         "Duedate": row[5],
         "Creator": row[6],
         "Editors": row[7],
@@ -38,7 +43,7 @@ def DisplayData(row) -> dict:
 
 def AddTask(Title, Status, PersonInCharge, CreationDate, DueDate, Creator, AdditionalInfo):
     Connection = sqlite3.connect(DB_PATH)
-    Connection.execute("INSERT INTO KANBAN (Title, Status, PersonInCharge, CreationDate, DueDate, Creator, AdditionalInfo) VALUES (?, ?, ?, ?, ?, ?, ?)", (Title, Status, PersonInCharge, CreationDate, DueDate, Creator, AdditionalInfo))
+    Connection.execute("INSERT INTO KANBAN (Title, Status, PersonInCharge, CreationDate, DueDate, Creator, AdditionalInfo) VALUES (?, ?, ?, ?, ?, ?, ?)", (Title, Status, PersonInCharge, FormatDate(CreationDate), DueDate, Creator, AdditionalInfo))
     Connection.commit()
     Connection.close()
 

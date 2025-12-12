@@ -66,7 +66,7 @@ class KanbanBoard:
                 task.AdditionalInfo = NewAdditionalInfo
             kdb.EditTask(index, task.title, task.Status, task.PersonInCharge, task.DueDate, task.Editors, task.AdditionalInfo)
             print(f"Task updated: {task.title}")
-        except IndexError:
+        except (IndexError, TypeError):
             print("Task not found.")
 
     def DelTask(self, index):
@@ -75,7 +75,7 @@ class KanbanBoard:
             removed_task = Task(Temp[1], Temp[2], Temp[3], Temp[5], Temp[6], Temp[8], Temp[4])
             kdb.DelTask(index)
             print(f"Deleted: {removed_task.title}")
-        except IndexError:
+        except (IndexError, TypeError):
             print("Task not found.")
 
     def DisplayBoard(self):

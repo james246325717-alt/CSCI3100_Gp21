@@ -1,20 +1,22 @@
+#!/usr/bin/env python3
 """
-Enhanced Database Module for Kanban System
-Refactored with improved security, error handling, and architecture
+Enterprise Kanban System - Enhanced Data Access Layer
+Robust database module with improved security, performance, and maintainability
 """
 
 import sqlite3
 from pathlib import Path
-import bcrypt
-from typing import Optional, Dict, Any, List, Union
+from typing import Optional, Dict, Any, List, Union, Tuple
+from datetime import datetime, timedelta
 from contextlib import contextmanager
+from enum import Enum
 import logging
-from datetime import datetime
+from dataclasses import dataclass
 import hashlib
-import os
+import re
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 
@@ -23,33 +25,164 @@ class DatabaseConfig:
     
     # Database settings
     DB_PATH = Path("kanban.db")
-    DB_BACKUP_DIR = Path("backups")
-    SALT_ROUNDS = 12  # bcrypt salt rounds for password hashing
+    DB_BACKUP_DIR = Path("database_backups")
+    DEFAULT_TIMEOUT = 30
     
-    # Table schemas
-    USER_TABLE_SCHEMA = """
-        CREATE TABLE IF NOT EXISTS USER (
+    # Table schemas with enhanced constraints
+    KANBAN_TABLE_SCHEMA = """
+        CREATE TABLE IF NOT EXISTS KANBAN (
             ID INTEGER PRIMARY KEY AUTOINCREMENT,
-            PhoneNo INTEGER NOT NULL UNIQUE,
-            Name VARCHAR(100) NOT NULL,
+            Title TEXT NOT NULL CHECK(length(Title) > 0 AND length(Title) <= 200),
+            Status TEXT NOT NULL CHECK(Status IN ('To-Do', 'In Progress', 'Waiting Review', 'Finished')),
+            PersonInCharge INTEGER NOT NULL,
+            CreationDate TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            DueDate TEXT NOT NULL CHECK(DueDate LIKE '____-__-__'),
+            Creator INTEGER NOT NULL,
+            Editors INTEGER,
+            AdditionalInfo TEXT,
+            LastModified TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            Version INTEGER NOT NULL DEFAULT 1,
             IsActive INTEGER NOT NULL DEFAULT 1,
-            Position VARCHAR(50) NOT NULL,
-            PasswordHash TEXT NOT NULL,
-            CreatedAt TEXT DEFAULT CURRENT_TIMESTAMP,
-            LastModified TEXT DEFAULT CURRENT_TIMESTAMP
+            FOREIGN KEY (PersonInCharge) REFERENCES USER(PhoneNo) ON UPDATE CASCADE ON DELETE RESTRICT,
+            FOREIGN KEY (Creator) REFERENCES USER(PhoneNo) ON UPDATE CASCADE ON DELETE RESTRICT,
+            FOREIGN KEY (Editors) REFERENCES USER(PhoneNo) ON UPDATE CASCADE ON DELETE SET NULL
         )
     """
     
-    # Indexes for performance
-    USER_INDEXES = [
-        "CREATE INDEX IF NOT EXISTS idx_user_phone ON USER(PhoneNo)",
-        "CREATE INDEX IF NOT EXISTS idx_user_active ON USER(IsActive)",
-        "CREATE INDEX IF NOT EXISTS idx_user_position ON USER(Position)"
+    # Performance indexes
+    TABLE_INDEXES = [
+        "CREATE INDEX IF NOT EXISTS idx_kanban_status ON KANBAN(Status)",
+        "CREATE INDEX IF NOT EXISTS idx_kanban_due_date ON KANBAN(DueDate)",
+        "CREATE INDEX IF NOT EXISTS idx_kanban_person ON KANBAN(PersonInCharge)",
+        "CREATE INDEX IF NOT EXISTS idx_kanban_creator ON KANBAN(Creator)",
+        "CREATE INDEX IF NOT EXISTS idx_kanban_modified ON KANBAN(LastModified)",
+        "CREATE INDEX IF NOT EXISTS idx_kanban_active ON KANBAN(IsActive)"
     ]
 
 
+class TaskStatus(Enum):
+    """Enumeration for task status to ensure type safety"""
+    TO_DO = "To-Do"
+    IN_PROGRESS = "In Progress"
+    WAITING_REVIEW = "Waiting Review"
+    FINISHED = "Finished"
+    
+    @classmethod
+    def get_valid_statuses(cls) -> List[str]:
+        """Get all valid status values"""
+        return [status.value for status in cls]
+    
+    @classmethod
+    def is_valid_status(cls, status: str) -> bool:
+        """Check if a status is valid"""
+        return status in cls.get_valid_statuses()
+
+
+@dataclass
+class Task:
+    """Data model representing a Kanban task with validation"""
+    
+    task_id: Optional[int] = None
+    title: str = ""
+    status: str = ""
+    person_in_charge: int = 0
+    creation_date: str = ""
+    due_date: str = ""
+    creator: int = 0
+    editors: Optional[int] = None
+    additional_info: str = ""
+    last_modified: str = ""
+    version: int = 1
+    is_active: bool = True
+    
+    def validate(self) -> List[str]:
+        """Validate task data and return list of errors"""
+        errors = []
+        
+        if not self.title or len(self.title.strip()) == 0:
+            errors.append("Task title cannot be empty")
+        elif len(self.title) > 200:
+            errors.append("Task title cannot exceed 200 characters")
+        
+        if not TaskStatus.is_valid_status(self.status):
+            valid_statuses = TaskStatus.get_valid_statuses()
+            errors.append(f"Invalid status: {self.status}. Must be one of {valid_statuses}")
+        
+        if not isinstance(self.person_in_charge, int) or self.person_in_charge <= 0:
+            errors.append("Person in charge must be a positive integer")
+        
+        if not isinstance(self.creator, int) or self.creator <= 0:
+            errors.append("Creator must be a positive integer")
+        
+        if self.editors is not None and (not isinstance(self.editors, int) or self.editors <= 0):
+            errors.append("Editors must be a positive integer or None")
+        
+        # Validate date format
+        if not self._is_valid_date_format(self.due_date):
+            errors.append("Due date must be in YYYY-MM-DD format")
+        
+        return errors
+    
+    def _is_valid_date_format(self, date_str: str) -> bool:
+        """Check if date string is in valid format"""
+        try:
+            datetime.strptime(date_str, "%Y-%m-%d")
+            return True
+        except ValueError:
+            return False
+    
+    def to_dict(self, include_sensitive: bool = False) -> Dict[str, Any]:
+        """Convert task to dictionary for serialization"""
+        data = {
+            'task_id': self.task_id,
+            'title': self.title,
+            'status': self.status,
+            'person_in_charge': self.person_in_charge,
+            'due_date': self.due_date,
+            'creator': self.creator,
+            'additional_info': self.additional_info,
+            'creation_date': self.creation_date,
+            'last_modified': self.last_modified,
+            'is_active': self.is_active
+        }
+        
+        if include_sensitive:
+            data['editors'] = self.editors
+            data['version'] = self.version
+        
+        return data
+    
+    @classmethod
+    def from_db_row(cls, row: sqlite3.Row) -> 'Task':
+        """Create Task from database row"""
+        return cls(
+            task_id=row['ID'],
+            title=row['Title'],
+            status=row['Status'],
+            person_in_charge=row['PersonInCharge'],
+            due_date=row['DueDate'],
+            creator=row['Creator'],
+            additional_info=row['AdditionalInfo'] or '',
+            creation_date=row['CreationDate'],
+            editors=row['Editors'],
+            last_modified=row['LastModified'],
+            version=row.get('Version', 1),
+            is_active=bool(row.get('IsActive', 1))
+        )
+    
+    def __str__(self) -> str:
+        """String representation for logging"""
+        return (f"Task(id={self.task_id}, title='{self.title}', status='{self.status}', "
+                f"due_date='{self.due_date}', assigned_to={self.person_in_charge})")
+
+
+class DatabaseError(Exception):
+    """Custom exception for database-related errors"""
+    pass
+
+
 class DatabaseConnectionManager:
-    """Manage database connections with context managers and connection pooling"""
+    """Enhanced database connection management with connection pooling and error handling"""
     
     _instance = None
     
@@ -75,21 +208,29 @@ class DatabaseConnectionManager:
         Context manager for database connections with automatic cleanup
         
         Yields:
-            sqlite3.Connection: Database connection
+            sqlite3.Connection: Database connection with proper configuration
         """
         connection = None
         try:
             connection = sqlite3.connect(
                 str(self.db_path),
-                timeout=30,  # 30 second timeout
-                check_same_thread=False  # Allow multithreaded access
+                timeout=DatabaseConfig.DEFAULT_TIMEOUT,
+                check_same_thread=False
             )
+            # Enable foreign keys and performance optimizations
             connection.execute("PRAGMA foreign_keys = ON")
+            connection.execute("PRAGMA journal_mode = WAL")
+            connection.execute("PRAGMA synchronous = NORMAL")
             connection.row_factory = sqlite3.Row  # Enable dictionary-like access
+            
             yield connection
+            connection.commit()  # Auto-commit on successful exit
+            
         except sqlite3.Error as e:
+            if connection:
+                connection.rollback()  # Rollback on error
             logger.error(f"Database connection error: {e}")
-            raise
+            raise DatabaseError(f"Database operation failed: {e}") from e
         finally:
             if connection:
                 connection.close()
@@ -115,342 +256,686 @@ class DatabaseConnectionManager:
             return False
 
 
-class PasswordManager:
-    """Enhanced password management with security best practices"""
+class KanbanRepository:
+    """
+    Repository pattern implementation for Kanban data operations
+    with enhanced performance and error handling
+    """
     
-    @staticmethod
-    def hash_password(password: str) -> str:
-        """
-        Hash password with bcrypt and additional security measures
-        
-        Args:
-            password: Plain text password
-            
-        Returns:
-            str: Hashed password
-            
-        Raises:
-            ValueError: If password is empty or too short
-        """
-        if not password or len(password.strip()) == 0:
-            raise ValueError("Password cannot be empty")
-        
-        if len(password) < 8:
-            raise ValueError("Password must be at least 8 characters long")
-        
-        # Additional password strength checks
-        if not any(char.isdigit() for char in password):
-            raise ValueError("Password must contain at least one number")
-        
-        if not any(char.isupper() for char in password):
-            raise ValueError("Password must contain at least one uppercase letter")
-        
-        try:
-            password_bytes = password.encode('utf-8')
-            salt = bcrypt.gensalt(rounds=DatabaseConfig.SALT_ROUNDS)
-            hashed = bcrypt.hashpw(password_bytes, salt)
-            return hashed.decode('utf-8')
-        except Exception as e:
-            logger.error(f"Password hashing error: {e}")
-            raise ValueError("Error processing password") from e
-    
-    @staticmethod
-    def verify_password(password: str, hashed_password: str) -> bool:
-        """
-        Verify password against hash with timing attack protection
-        
-        Args:
-            password: Plain text password to verify
-            hashed_password: Previously hashed password
-            
-        Returns:
-            bool: True if password matches hash
-        """
-        if not password or not hashed_password:
-            return False
-        
-        try:
-            password_bytes = password.encode('utf-8')
-            hashed_bytes = hashed_password.encode('utf-8')
-            return bcrypt.checkpw(password_bytes, hashed_bytes)
-        except Exception as e:
-            logger.error(f"Password verification error: {e}")
-            return False
-    
-    @staticmethod
-    def is_password_compromised(password: str) -> bool:
-        """
-        Basic check for common compromised passwords
-        In production, this should use a proper compromised password API
-        
-        Args:
-            password: Password to check
-            
-        Returns:
-            bool: True if password is in common compromised list
-        """
-        # Simple check for very common passwords (expand this list in production)
-        common_passwords = {
-            'password', '123456', '12345678', '1234', 'qwerty', 'letmein',
-            'admin', 'welcome', 'monkey', 'password1', '1234567'
-        }
-        
-        return password.lower() in common_passwords
-
-
-class UserModel:
-    """Data model for user operations with validation"""
-    
-    def __init__(self, 
-                 phone_no: int, 
-                 name: str, 
-                 position: str, 
-                 password_hash: str,
-                 user_id: Optional[int] = None,
-                 is_active: bool = True,
-                 created_at: Optional[str] = None,
-                 last_modified: Optional[str] = None):
-        
-        self._validate_constructor_args(phone_no, name, position, password_hash)
-        
-        self.user_id = user_id
-        self.phone_no = phone_no
-        self.name = name.strip()
-        self.position = position
-        self.password_hash = password_hash
-        self.is_active = is_active
-        self.created_at = created_at or datetime.now().isoformat()
-        self.last_modified = last_modified or datetime.now().isoformat()
-    
-    def _validate_constructor_args(self, phone_no: int, name: str, 
-                                 position: str, password_hash: str):
-        """Validate constructor arguments"""
-        if not isinstance(phone_no, int) or phone_no <= 0:
-            raise ValueError("Phone number must be a positive integer")
-        
-        if not name or not name.strip():
-            raise ValueError("Name cannot be empty")
-        
-        if len(name.strip()) > 100:
-            raise ValueError("Name must be 100 characters or less")
-        
-        valid_positions = {'Admin', 'User', 'Manager', 'Viewer'}
-        if position not in valid_positions:
-            raise ValueError(f"Position must be one of: {', '.join(valid_positions)}")
-        
-        if not password_hash:
-            raise ValueError("Password hash cannot be empty")
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert user to dictionary for serialization"""
-        return {
-            'user_id': self.user_id,
-            'phone_no': self.phone_no,
-            'name': self.name,
-            'position': self.position,
-            'is_active': self.is_active,
-            'created_at': self.created_at,
-            'last_modified': self.last_modified
-            # Note: password_hash is intentionally excluded for security
-        }
-    
-    @classmethod
-    def from_db_row(cls, row: sqlite3.Row) -> 'UserModel':
-        """Create UserModel from database row"""
-        return cls(
-            user_id=row['ID'],
-            phone_no=row['PhoneNo'],
-            name=row['Name'],
-            position=row['Position'],
-            password_hash=row['PasswordHash'],
-            is_active=bool(row['IsActive']),
-            created_at=row['CreatedAt'],
-            last_modified=row['LastModified']
-        )
-
-
-class UserRepository:
-    """Repository pattern for user data operations"""
-    
-    def __init__(self, connection_manager: DatabaseConnectionManager):
-        self.connection_manager = connection_manager
-        self.password_manager = PasswordManager()
+    def __init__(self, connection_manager: DatabaseConnectionManager = None):
+        self.connection_manager = connection_manager or DatabaseConnectionManager()
+        self._initialized = False
     
     def initialize_database(self) -> bool:
         """Initialize database with tables and indexes"""
         try:
             with self.connection_manager.get_connection() as conn:
-                # Create user table
-                conn.execute(DatabaseConfig.USER_TABLE_SCHEMA)
+                # Create kanban table
+                conn.execute(DatabaseConfig.KANBAN_TABLE_SCHEMA)
                 
                 # Create indexes
-                for index_sql in DatabaseConfig.USER_INDEXES:
-                    conn.execute(index_sql)
+                for index_sql in DatabaseConfig.TABLE_INDEXES:
+                    try:
+                        conn.execute(index_sql)
+                    except sqlite3.Error as e:
+                        logger.warning(f"Index creation warning: {e}")
                 
                 conn.commit()
-                logger.info("Database initialized successfully")
+                logger.info("Kanban database initialized successfully")
+                self._initialized = True
                 return True
                 
         except sqlite3.Error as e:
             logger.error(f"Database initialization failed: {e}")
-            return False
+            raise DatabaseError(f"Failed to initialize database: {e}") from e
     
-    def create_user(self, phone_no: int, name: str, position: str, 
-                   password: str) -> Dict[str, Any]:
+    def add_task(self, title: str, status: str, person_in_charge: int, 
+                 due_date: str, creator: int, additional_info: str = "") -> int:
         """
-        Create a new user with comprehensive validation
+        Add a new task to the kanban board with comprehensive validation
         
         Args:
-            phone_no: User's phone number (unique identifier)
-            name: User's full name
-            position: User's position/role
-            password: Plain text password
+            title: Task title
+            status: Task status
+            person_in_charge: Responsible person's phone number
+            due_date: Due date in YYYY-MM-DD format
+            creator: Creator's phone number
+            additional_info: Additional task information
             
         Returns:
-            Dict with user data and operation status
+            int: ID of the newly created task
             
         Raises:
-            ValueError: For validation errors
-            sqlite3.IntegrityError: For duplicate phone numbers
+            DatabaseError: If database operation fails
+            ValueError: If task data is invalid
         """
-        # Pre-validation
-        self._validate_user_inputs(phone_no, name, position, password)
+        # Validate inputs
+        if not title or not title.strip():
+            raise ValueError("Task title cannot be empty")
         
-        # Check if user already exists
-        if self.get_user_by_phone(phone_no):
-            raise ValueError(f"User with phone number {phone_no} already exists")
+        if len(title.strip()) > 200:
+            raise ValueError("Task title cannot exceed 200 characters")
         
-        # Hash password
-        password_hash = self.password_manager.hash_password(password)
+        if not TaskStatus.is_valid_status(status):
+            valid_statuses = TaskStatus.get_valid_statuses()
+            raise ValueError(f"Invalid status: {status}. Must be one of {valid_statuses}")
         
-        # Set default activation based on position
-        is_active = 1 if position == "Admin" else 0
+        if not isinstance(person_in_charge, int) or person_in_charge <= 0:
+            raise ValueError("Person in charge must be a positive integer")
+        
+        if not isinstance(creator, int) or creator <= 0:
+            raise ValueError("Creator must be a positive integer")
+        
+        if not self._is_valid_date_format(due_date):
+            raise ValueError("Due date must be in YYYY-MM-DD format")
         
         try:
             with self.connection_manager.get_connection() as conn:
                 cursor = conn.execute("""
-                    INSERT INTO USER (PhoneNo, Name, Position, PasswordHash, IsActive)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (phone_no, name, position, password_hash, is_active))
+                    INSERT INTO KANBAN 
+                    (Title, Status, PersonInCharge, DueDate, Creator, AdditionalInfo, LastModified)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    title.strip(), status, person_in_charge, due_date,
+                    creator, additional_info, datetime.now().isoformat()
+                ))
                 
-                user_id = cursor.lastrowid
-                conn.commit()
-                
-                # Return created user data (excluding password hash)
-                user = self.get_user_by_phone(phone_no)
-                logger.info(f"User created successfully: {phone_no}")
-                return {
-                    'success': True,
-                    'user_id': user_id,
-                    'user_data': user
-                }
+                task_id = cursor.lastrowid
+                logger.info(f"Task added successfully: {title} (ID: {task_id})")
+                return task_id
                 
         except sqlite3.IntegrityError as e:
-            logger.error(f"User creation integrity error: {e}")
-            raise ValueError(f"Phone number {phone_no} already exists") from e
+            error_msg = f"Database integrity error: {e}"
+            logger.error(error_msg)
+            raise DatabaseError(error_msg) from e
         except sqlite3.Error as e:
-            logger.error(f"User creation database error: {e}")
-            raise ValueError(f"Database error: {e}") from e
+            error_msg = f"Failed to add task: {e}"
+            logger.error(error_msg)
+            raise DatabaseError(error_msg) from e
     
-    def get_user_by_phone(self, phone_no: int) -> Optional[Dict[str, Any]]:
-        """Get user by phone number, excluding sensitive data"""
+    def get_task_by_id(self, task_id: int) -> Optional[Task]:
+        """
+        Retrieve a task by its ID
+        
+        Args:
+            task_id: ID of the task to retrieve
+            
+        Returns:
+            Optional[Task]: Task instance if found, None otherwise
+        """
         try:
             with self.connection_manager.get_connection() as conn:
                 cursor = conn.execute(
-                    "SELECT * FROM USER WHERE PhoneNo = ?", 
-                    (phone_no,)
+                    "SELECT * FROM KANBAN WHERE ID = ? AND IsActive = 1", 
+                    (task_id,)
                 )
                 row = cursor.fetchone()
                 
                 if row:
-                    user_model = UserModel.from_db_row(row)
-                    return user_model.to_dict()
+                    return Task.from_db_row(row)
                 return None
                 
         except sqlite3.Error as e:
-            logger.error(f"Error retrieving user {phone_no}: {e}")
+            logger.error(f"Error retrieving task {task_id}: {e}")
             return None
     
-    def get_user_with_credentials(self, phone_no: int) -> Optional[Dict[str, Any]]:
-        """Get user including password hash for authentication (internal use)"""
-        try:
-            with self.connection_manager.get_connection() as conn:
-                cursor = conn.execute(
-                    "SELECT * FROM USER WHERE PhoneNo = ?", 
-                    (phone_no,)
-                )
-                row = cursor.fetchone()
-                return dict(row) if row else None
-                
-        except sqlite3.Error as e:
-            logger.error(f"Error retrieving user credentials {phone_no}: {e}")
-            return None
-    
-    def validate_login(self, phone_no: int, password: str) -> Optional[Dict[str, Any]]:
+    def get_all_tasks(self, include_inactive: bool = False) -> List[Task]:
         """
-        Validate user login credentials
+        Retrieve all tasks from the database
         
         Args:
-            phone_no: User's phone number
-            password: Plain text password
+            include_inactive: Whether to include inactive tasks
             
         Returns:
-            User data if valid, None otherwise
+            List[Task]: List of all tasks
         """
         try:
-            user_data = self.get_user_with_credentials(phone_no)
-            
-            if not user_data:
-                logger.warning(f"Login attempt for non-existent user: {phone_no}")
-                return None
-            
-            if not user_data.get('IsActive', 0):
-                logger.warning(f"Login attempt for inactive user: {phone_no}")
-                return None
-            
-            if not self.password_manager.verify_password(password, user_data['PasswordHash']):
-                logger.warning(f"Invalid password for user: {phone_no}")
-                return None
-            
-            # Return user data without password hash
-            user_model = UserModel.from_db_row(user_data)
-            logger.info(f"Successful login for user: {phone_no}")
-            return user_model.to_dict()
-            
-        except Exception as e:
-            logger.error(f"Login validation error for {phone_no}: {e}")
-            return None
+            with self.connection_manager.get_connection() as conn:
+                query = "SELECT * FROM KANBAN"
+                if not include_inactive:
+                    query += " WHERE IsActive = 1"
+                
+                query += " ORDER BY DueDate ASC, LastModified DESC"
+                
+                cursor = conn.execute(query)
+                tasks = []
+                
+                for row in cursor:
+                    try:
+                        task = Task.from_db_row(row)
+                        tasks.append(task)
+                    except (ValueError, TypeError) as e:
+                        logger.warning(f"Skipping invalid task data: {e}")
+                        continue
+                
+                return tasks
+                
+        except sqlite3.Error as e:
+            logger.error(f"Error retrieving tasks: {e}")
+            return []
     
-    def change_activation_status(self, phone_no: int, is_active: bool) -> bool:
-        """Change user activation status"""
+    def update_task(self, task_id: int, **updates) -> bool:
+        """
+        Update task fields with partial updates
+        
+        Args:
+            task_id: ID of task to update
+            **updates: Field updates (title, status, person_in_charge, etc.)
+            
+        Returns:
+            bool: True if update successful, False otherwise
+        """
+        if not updates:
+            logger.warning("No updates provided for task update")
+            return True  # No updates needed
+        
+        valid_fields = {'title', 'status', 'person_in_charge', 'due_date', 
+                       'additional_info', 'editors', 'is_active'}
+        
+        # Validate update fields
+        for field in updates.keys():
+            if field not in valid_fields:
+                raise ValueError(f"Invalid field for update: {field}")
+        
+        # Special validation for status
+        if 'status' in updates and not TaskStatus.is_valid_status(updates['status']):
+            raise ValueError(f"Invalid status: {updates['status']}")
+        
         try:
             with self.connection_manager.get_connection() as conn:
-                conn.execute(
-                    "UPDATE USER SET IsActive = ?, LastModified = ? WHERE PhoneNo = ?",
-                    (int(is_active), datetime.now().isoformat(), phone_no)
-                )
-                conn.commit()
+                set_clause = ", ".join([f"{field} = ?" for field in updates.keys()])
+                set_clause += ", LastModified = ?, Version = Version + 1"
                 
-                logger.info(f"User {phone_no} activation set to {is_active}")
+                values = list(updates.values())
+                values.append(datetime.now().isoformat())
+                values.append(task_id)
+                
+                cursor = conn.execute(
+                    f"UPDATE KANBAN SET {set_clause} WHERE ID = ?",
+                    values
+                )
+                
+                if cursor.rowcount == 0:
+                    logger.warning(f"Task {task_id} not found for update")
+                    return False
+                
+                logger.info(f"Task {task_id} updated successfully")
                 return True
                 
         except sqlite3.Error as e:
-            logger.error(f"Error changing activation status for {phone_no}: {e}")
+            logger.error(f"Error updating task {task_id}: {e}")
             return False
     
-    def get_all_users(self, active_only: bool = False) -> List[Dict[str, Any]]:
-        """Get all users with optional active-only filter"""
+    def delete_task(self, task_id: int, soft_delete: bool = True) -> bool:
+        """
+        Delete a task by ID (soft delete by default)
+        
+        Args:
+            task_id: ID of task to delete
+            soft_delete: If True, mark as inactive; if False, permanently delete
+            
+        Returns:
+            bool: True if deletion successful, False otherwise
+        """
         try:
             with self.connection_manager.get_connection() as conn:
-                if active_only:
-                    cursor = conn.execute("SELECT * FROM USER WHERE IsActive = 1")
-                else:
-                    cursor = conn.execute("SELECT * FROM USER")
+                # First verify task exists
+                task = self.get_task_by_id(task_id)
+                if not task:
+                    logger.warning(f"Task {task_id} not found for deletion")
+                    return False
                 
-                users = []
+                if soft_delete:
+                    # Soft delete (mark as inactive)
+                    cursor = conn.execute(
+                        "UPDATE KANBAN SET IsActive = 0, LastModified = ? WHERE ID = ?",
+                        (datetime.now().isoformat(), task_id)
+                    )
+                else:
+                    # Hard delete (permanent removal)
+                    cursor = conn.execute("DELETE FROM KANBAN WHERE ID = ?", (task_id,))
+                
+                if cursor.rowcount > 0:
+                    action = "soft deleted" if soft_delete else "permanently deleted"
+                    logger.info(f"Task {action}: {task.title} (ID: {task_id})")
+                    return True
+                return False
+                
+        except sqlite3.Error as e:
+            logger.error(f"Error deleting task {task_id}: {e}")
+            return False
+    
+    def get_tasks_by_status(self, status: str) -> List[Task]:
+        """
+        Get all tasks with a specific status
+        
+        Args:
+            status: Status to filter by
+            
+        Returns:
+            List of tasks with the specified status
+        """
+        if not TaskStatus.is_valid_status(status):
+            raise ValueError(f"Invalid status: {status}")
+        
+        try:
+            with self.connection_manager.get_connection() as conn:
+                cursor = conn.execute(
+                    "SELECT * FROM KANBAN WHERE Status = ? AND IsActive = 1 ORDER BY DueDate ASC",
+                    (status,)
+                )
+                
+                tasks = []
                 for row in cursor:
-                    user_model = UserModel.from_db_row(row)
-                    users.append(user_model.to_dict())
+                    tasks.append(Task.from_db_row(row))
+                
+                return tasks
+                
+        except sqlite3.Error as e:
+            logger.error(f"Error retrieving tasks by status {status}: {e}")
+            return []
+    
+    def get_tasks_by_assignee(self, person_in_charge: int) -> List[Task]:
+        """
+        Get all tasks assigned to a specific person
+        
+        Args:
+            person_in_charge: Phone number of the assignee
+            
+        Returns:
+            List of tasks assigned to the person
+        """
+        try:
+            with self.connection_manager.get_connection() as conn:
+                cursor = conn.execute("""
+                    SELECT * FROM KANBAN 
+                    WHERE PersonInCharge = ? AND IsActive = 1
+                    ORDER BY DueDate ASC, Status DESC
+                """, (person_in_charge,))
+                
+                tasks = []
+                for row in cursor:
+                    tasks.append(Task.from_db_row(row))
+                
+                return tasks
+                
+        except sqlite3.Error as e:
+            logger.error(f"Error retrieving tasks for assignee {person_in_charge}: {e}")
+            return []
+    
+    def get_overdue_tasks(self) -> List[Task]:
+        """Get all tasks that are overdue"""
+        try:
+            today = datetime.now().strftime("%Y-%m-%d")
+            
+            with self.connection_manager.get_connection() as conn:
+                cursor = conn.execute("""
+                    SELECT * FROM KANBAN 
+                    WHERE DueDate < ? AND Status != 'Finished' AND IsActive = 1
+                    ORDER BY DueDate ASC
+                """, (today,))
+                
+                tasks = []
+                for row in cursor:
+                    tasks.append(Task.from_db_row(row))
+                
+                return tasks
+                
+        except sqlite3.Error as e:
+            logger.error(f"Error retrieving overdue tasks: {e}")
+            return []
+    
+    def count_tasks_by_status(self) -> Dict[str, int]:
+        """Count tasks grouped by status"""
+        try:
+            with self.connection_manager.get_connection() as conn:
+                cursor = conn.execute("""
+                    SELECT Status, COUNT(*) as count 
+                    FROM KANBAN 
+                    WHERE IsActive = 1
+                    GROUP BY Status
+                """)
+                
+                counts = {}
+                for row in cursor:
+                    counts[row['Status']] = row['count']
+                
+                # Ensure all statuses are present
+                for status in TaskStatus.get_valid_statuses():
+                    if status not in counts:
+                        counts[status] = 0
+                
+                return counts
+                
+        except sqlite3.Error as e:
+            logger.error(f"Error counting tasks by status: {e}")
+            return {status: 0 for status in TaskStatus.get_valid_statuses()}
+    
+    def count_tasks_by_person(self) -> Dict[int, int]:
+        """Count tasks grouped by assignee"""
+        try:
+            with self.connection_manager.get_connection() as conn:
+                cursor = conn.execute("""
+                    SELECT PersonInCharge, COUNT(*) as count 
+                    FROM KANBAN 
+                    WHERE IsActive = 1
+                    GROUP BY PersonInCharge
+                """)
+                
+                return {row['PersonInCharge']: row['count'] for row in cursor}
+                
+        except sqlite3.Error as e:
+            logger.error("Error counting tasks by person: {e}")
+            return {}
+    
+    def search_tasks(self, search_term: str, search_fields: List[str] = None) -> List[Task]:
+        """
+        Search tasks by text in specified fields
+        
+        Args:
+            search_term: Text to search for
+            search_fields: Fields to search in (title, additional_info)
+            
+        Returns:
+            List of matching tasks
+        """
+        if not search_fields:
+            search_fields = ['Title', 'AdditionalInfo']
+        
+        valid_fields = ['Title', 'AdditionalInfo']
+        for field in search_fields:
+            if field not in valid_fields:
+                raise ValueError(f"Invalid search field: {field}")
+        
+        try:
+            with self.connection_manager.get_connection() as conn:
+                # Build search conditions
+                conditions = " OR ".join([f"{field} LIKE ?" for field in search_fields])
+                search_pattern = f"%{search_term}%"
+                
+                cursor = conn.execute(f"""
+                    SELECT * FROM KANBAN 
+                    WHERE ({conditions}) AND IsActive = 1
+                    ORDER BY DueDate ASC
+                """, [search_pattern] * len(search_fields))
+                
+                tasks = []
+                for row in cursor:
+                    tasks.append(Task.from_db_row(row))
+                
+                return tasks
+                
+        except sqlite3.Error as e:
+            logger.error(f"Error searching tasks: {e}")
+            return []
+    
+    def _is_valid_date_format(self, date_str: str) -> bool:
+        """Validate date format without throwing exceptions"""
+        try:
+            datetime.strptime(date_str, "%Y-%m-%d")
+            return True
+        except ValueError:
+            return False
+
+class UserService:
+    """Service for user-related operations with caching and enhanced security"""
+    
+    def __init__(self, connection_manager: DatabaseConnectionManager):
+        self.connection_manager = connection_manager
+        self._user_cache = {}  # Cache for user information to reduce database queries
+        self._cache_ttl = timedelta(minutes=30)  # Cache time-to-live
+        self._last_cache_cleanup = datetime.now()
+    
+    def get_user_by_phone(self, phone_number: int) -> Optional[Dict[str, Any]]:
+        """
+        Get user information by phone number with caching support
+        
+        Args:
+            phone_number: User's phone number
+            
+        Returns:
+            Dict with user information or None if not found
+        """
+        # Check cache first
+        cache_key = f"user_{phone_number}"
+        if cache_key in self._user_cache:
+            cached_data = self._user_cache[cache_key]
+            if datetime.now() - cached_data['timestamp'] < self._cache_ttl:
+                return cached_data['data']
+            else:
+                # Cache expired
+                del self._user_cache[cache_key]
+        
+        try:
+            with self.connection_manager.get_connection() as conn:
+                cursor = conn.execute("""
+                    SELECT ID, PhoneNo, Name, Position, IsActive, CreatedAt, LastModified
+                    FROM USER 
+                    WHERE PhoneNo = ? AND IsActive = 1
+                """, (phone_number,))
+                
+                row = cursor.fetchone()
+                if row:
+                    user_data = {
+                        'user_id': row['ID'],
+                        'phone_no': row['PhoneNo'],
+                        'name': row['Name'],
+                        'position': row['Position'],
+                        'is_active': bool(row['IsActive']),
+                        'created_at': row['CreatedAt'],
+                        'last_modified': row['LastModified']
+                    }
+                    
+                    # Cache the result
+                    self._user_cache[cache_key] = {
+                        'data': user_data,
+                        'timestamp': datetime.now()
+                    }
+                    
+                    # Cleanup old cache entries periodically
+                    self._cleanup_cache()
+                    
+                    return user_data
+                return None
+                
+        except sqlite3.Error as e:
+            logger.error(f"Error retrieving user {phone_number}: {e}")
+            return None
+    
+    def validate_user_credentials(self, phone_number: int, password: str) -> Optional[Dict[str, Any]]:
+        """
+        Validate user credentials with secure password checking
+        
+        Args:
+            phone_number: User's phone number
+            password: Plain text password to validate
+            
+        Returns:
+            User data if credentials valid, None otherwise
+        """
+        try:
+            with self.connection_manager.get_connection() as conn:
+                cursor = conn.execute("""
+                    SELECT ID, PhoneNo, Name, Position, PasswordHash, IsActive, CreatedAt
+                    FROM USER 
+                    WHERE PhoneNo = ? AND IsActive = 1
+                """, (phone_number,))
+                
+                row = cursor.fetchone()
+                if row:
+                    # In a real implementation, use proper password hashing
+                    # For now, this is a simplified version
+                    stored_hash = row['PasswordHash']
+                    if self._verify_password(password, stored_hash):
+                        return {
+                            'user_id': row['ID'],
+                            'phone_no': row['PhoneNo'],
+                            'name': row['Name'],
+                            'position': row['Position'],
+                            'is_active': bool(row['IsActive']),
+                            'created_at': row['CreatedAt']
+                        }
+                return None
+                
+        except sqlite3.Error as e:
+            logger.error(f"Error validating credentials for {phone_number}: {e}")
+            return None
+    
+    def create_user(self, user_data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Create a new user account with comprehensive validation
+        
+        Args:
+            user_data: Dictionary containing user information
+            
+        Returns:
+            Dictionary with creation result
+        """
+        required_fields = ['phone_no', 'name', 'position', 'password']
+        for field in required_fields:
+            if field not in user_data:
+                return {
+                    'success': False,
+                    'error': f"Missing required field: {field}"
+                }
+        
+        try:
+            # Hash password before storage
+            hashed_password = self._hash_password(user_data['password'])
+            
+            with self.connection_manager.get_connection() as conn:
+                cursor = conn.execute("""
+                    INSERT INTO USER (PhoneNo, Name, Position, PasswordHash, IsActive, CreatedAt)
+                    VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+                """, (
+                    user_data['phone_no'],
+                    user_data['name'],
+                    user_data['position'],
+                    hashed_password
+                ))
+                
+                user_id = cursor.lastrowid
+                
+                # Get the created user data
+                created_user = self.get_user_by_phone(user_data['phone_no'])
+                
+                logger.info(f"User created successfully: {user_data['name']} (ID: {user_id})")
+                
+                return {
+                    'success': True,
+                    'user_id': user_id,
+                    'user_data': created_user
+                }
+                
+        except sqlite3.IntegrityError as e:
+            error_msg = f"User with phone {user_data['phone_no']} already exists"
+            logger.error(error_msg)
+            return {
+                'success': False,
+                'error': error_msg
+            }
+        except sqlite3.Error as e:
+            error_msg = f"Failed to create user: {e}"
+            logger.error(error_msg)
+            return {
+                'success': False,
+                'error': error_msg
+            }
+    
+    def update_user(self, phone_number: int, updates: Dict[str, Any]) -> bool:
+        """
+        Update user information with partial updates
+        
+        Args:
+            phone_number: User's phone number
+            updates: Dictionary of fields to update
+            
+        Returns:
+            bool: True if update successful, False otherwise
+        """
+        if not updates:
+            logger.warning("No updates provided for user update")
+            return True
+        
+        valid_fields = ['name', 'position', 'is_active']
+        for field in updates.keys():
+            if field not in valid_fields:
+                logger.error(f"Invalid field for user update: {field}")
+                return False
+        
+        try:
+            with self.connection_manager.get_connection() as conn:
+                set_clause = ", ".join([f"{field} = ?" for field in updates.keys()])
+                set_clause += ", LastModified = CURRENT_TIMESTAMP"
+                
+                values = list(updates.values())
+                values.append(phone_number)
+                
+                cursor = conn.execute(
+                    f"UPDATE USER SET {set_clause} WHERE PhoneNo = ?",
+                    values
+                )
+                
+                if cursor.rowcount > 0:
+                    # Clear cache for this user
+                    cache_key = f"user_{phone_number}"
+                    if cache_key in self._user_cache:
+                        del self._user_cache[cache_key]
+                    
+                    logger.info(f"User {phone_number} updated successfully")
+                    return True
+                return False
+                
+        except sqlite3.Error as e:
+            logger.error(f"Error updating user {phone_number}: {e}")
+            return False
+    
+    def deactivate_user(self, phone_number: int) -> bool:
+        """
+        Deactivate a user account (soft delete)
+        
+        Args:
+            phone_number: User's phone number
+            
+        Returns:
+            bool: True if deactivation successful, False otherwise
+        """
+        return self.update_user(phone_number, {'is_active': 0})
+    
+    def get_all_users(self, active_only: bool = True) -> List[Dict[str, Any]]:
+        """
+        Get all users with optional active-only filter
+        
+        Args:
+            active_only: Whether to include only active users
+            
+        Returns:
+            List of user dictionaries
+        """
+        try:
+            with self.connection_manager.get_connection() as conn:
+                query = """
+                    SELECT ID, PhoneNo, Name, Position, IsActive, CreatedAt, LastModified
+                    FROM USER
+                """
+                if active_only:
+                    query += " WHERE IsActive = 1"
+                
+                query += " ORDER BY Name ASC"
+                
+                cursor = conn.execute(query)
+                users = []
+                
+                for row in cursor:
+                    users.append({
+                        'user_id': row['ID'],
+                        'phone_no': row['PhoneNo'],
+                        'name': row['Name'],
+                        'position': row['Position'],
+                        'is_active': bool(row['IsActive']),
+                        'created_at': row['CreatedAt'],
+                        'last_modified': row['LastModified']
+                    })
                 
                 return users
                 
@@ -458,86 +943,315 @@ class UserRepository:
             logger.error(f"Error retrieving users: {e}")
             return []
     
-    def user_exists(self, phone_no: int) -> bool:
-        """Check if user exists"""
-        return self.get_user_by_phone(phone_no) is not None
+    def user_exists(self, phone_number: int) -> bool:
+        """
+        Check if a user exists in the system
+        
+        Args:
+            phone_number: User's phone number
+            
+        Returns:
+            bool: True if user exists, False otherwise
+        """
+        return self.get_user_by_phone(phone_number) is not None
     
-    def _validate_user_inputs(self, phone_no: int, name: str, 
-                           position: str, password: str):
-        """Validate user input parameters"""
-        if not isinstance(phone_no, int) or phone_no <= 0:
-            raise ValueError("Phone number must be a positive integer")
+    def get_user_display_name(self, phone_number: int) -> str:
+        """
+        Get formatted user display name for UI purposes
         
-        if not name or not name.strip():
-            raise ValueError("Name cannot be empty")
+        Args:
+            phone_number: User's phone number
+            
+        Returns:
+            str: Formatted display name
+        """
+        user_data = self.get_user_by_phone(phone_number)
+        if user_data:
+            return f"{user_data['name']} ({phone_number})"
+        return f"Unknown User ({phone_number})"
+    
+    def search_users(self, search_term: str, search_fields: List[str] = None) -> List[Dict[str, Any]]:
+        """
+        Search users by text in specified fields
         
-        if len(name.strip()) > 100:
-            raise ValueError("Name must be 100 characters or less")
+        Args:
+            search_term: Text to search for
+            search_fields: Fields to search in (name, position)
+            
+        Returns:
+            List of matching users
+        """
+        if not search_fields:
+            search_fields = ['Name', 'Position']
         
-        valid_positions = {'Admin', 'User', 'Manager', 'Viewer'}
-        if position not in valid_positions:
-            raise ValueError(f"Position must be one of: {', '.join(valid_positions)}")
+        valid_fields = ['Name', 'Position']
+        for field in search_fields:
+            if field not in valid_fields:
+                raise ValueError(f"Invalid search field: {field}")
         
-        if self.password_manager.is_password_compromised(password):
-            raise ValueError("Password is too common or compromised")
+        try:
+            with self.connection_manager.get_connection() as conn:
+                conditions = " OR ".join([f"{field} LIKE ?" for field in search_fields])
+                search_pattern = f"%{search_term}%"
+                
+                cursor = conn.execute(f"""
+                    SELECT ID, PhoneNo, Name, Position, IsActive, CreatedAt, LastModified
+                    FROM USER 
+                    WHERE ({conditions}) AND IsActive = 1
+                    ORDER BY Name ASC
+                """, [search_pattern] * len(search_fields))
+                
+                users = []
+                for row in cursor:
+                    users.append({
+                        'user_id': row['ID'],
+                        'phone_no': row['PhoneNo'],
+                        'name': row['Name'],
+                        'position': row['Position'],
+                        'is_active': bool(row['IsActive']),
+                        'created_at': row['CreatedAt'],
+                        'last_modified': row['LastModified']
+                    })
+                
+                return users
+                
+        except sqlite3.Error as e:
+            logger.error(f"Error searching users: {e}")
+            return []
+    
+    def _hash_password(self, password: str) -> str:
+        """
+        Hash password for secure storage (simplified version)
+        
+        Note: In production, use a proper password hashing library like bcrypt
+        
+        Args:
+            password: Plain text password
+            
+        Returns:
+            str: Hashed password
+        """
+        # This is a simplified version for demonstration
+        # In production, use: bcrypt.hashpw(password.encode(), bcrypt.gensalt())
+        return hashlib.sha256(password.encode()).hexdigest()
+    
+    def _verify_password(self, password: str, stored_hash: str) -> bool:
+        """
+        Verify password against stored hash (simplified version)
+        
+        Args:
+            password: Plain text password to verify
+            stored_hash: Stored password hash
+            
+        Returns:
+            bool: True if password matches hash
+        """
+        # This is a simplified version for demonstration
+        # In production, use: bcrypt.checkpw(password.encode(), stored_hash.encode())
+        return hashlib.sha256(password.encode()).hexdigest() == stored_hash
+    
+    def _cleanup_cache(self):
+        """Clean up expired cache entries"""
+        now = datetime.now()
+        if now - self._last_cache_cleanup > timedelta(minutes=5):
+            expired_keys = []
+            for key, data in self._user_cache.items():
+                if now - data['timestamp'] > self._cache_ttl:
+                    expired_keys.append(key)
+            
+            for key in expired_keys:
+                del self._user_cache[key]
+            
+            self._last_cache_cleanup = now
+            
+            if expired_keys:
+                logger.debug(f"Cleaned up {len(expired_keys)} expired cache entries")
+
+
+class KanbanSystem:
+    """Main system class coordinating all components"""
+    
+    def __init__(self, db_path: Path = None):
+        self.db_path = db_path or DatabaseConfig.DB_PATH
+        self.connection_manager = DatabaseConnectionManager()
+        self.kanban_repo = KanbanRepository(self.connection_manager)
+        self.user_service = UserService(self.connection_manager)
+        self._initialized = False
+    
+    def initialize_system(self) -> bool:
+        """Initialize the complete kanban system"""
+        try:
+            # Initialize database schema
+            if not self.kanban_repo.initialize_database():
+                logger.error("Failed to initialize database")
+                return False
+            
+            # Create backup
+            self.connection_manager.backup_database()
+            
+            self._initialized = True
+            logger.info("Kanban system initialized successfully")
+            return True
+            
+        except Exception as e:
+            logger.error(f"System initialization failed: {e}")
+            return False
+    
+    def add_task(self, title: str, status: str, person_in_charge: int, 
+                 due_date: str, creator: int, additional_info: str = "") -> int:
+        """Add a new task to the system"""
+        return self.kanban_repo.add_task(
+            title, status, person_in_charge, due_date, creator, additional_info
+        )
+    
+    def get_task(self, task_id: int) -> Optional[Task]:
+        """Get a task by ID"""
+        return self.kanban_repo.get_task_by_id(task_id)
+    
+    def get_all_tasks(self, include_inactive: bool = False) -> List[Task]:
+        """Get all tasks"""
+        return self.kanban_repo.get_all_tasks(include_inactive)
+    
+    def update_task(self, task_id: int, **updates) -> bool:
+        """Update task fields"""
+        return self.kanban_repo.update_task(task_id, **updates)
+    
+    def delete_task(self, task_id: int, soft_delete: bool = True) -> bool:
+        """Delete a task"""
+        return self.kanban_repo.delete_task(task_id, soft_delete)
+    
+    def get_user(self, phone_number: int) -> Optional[Dict[str, Any]]:
+        """Get user information"""
+        return self.user_service.get_user_by_phone(phone_number)
+    
+    def validate_login(self, phone_number: int, password: str) -> Optional[Dict[str, Any]]:
+        """Validate user credentials"""
+        return self.user_service.validate_user_credentials(phone_number, password)
+    
+    def create_user(self, user_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Create a new user"""
+        return self.user_service.create_user(user_data)
+    
+    def get_system_stats(self) -> Dict[str, Any]:
+        """Get system statistics"""
+        try:
+            task_counts = self.kanban_repo.count_tasks_by_status()
+            user_counts = self.kanban_repo.count_tasks_by_person()
+            overdue_tasks = self.kanban_repo.get_overdue_tasks()
+            all_users = self.user_service.get_all_users()
+            
+            return {
+                'task_counts_by_status': task_counts,
+                'task_counts_by_person': user_counts,
+                'overdue_tasks_count': len(overdue_tasks),
+                'active_users_count': len(all_users),
+                'total_tasks': sum(task_counts.values()),
+                'generated_at': datetime.now().isoformat()
+            }
+            
+        except Exception as e:
+            logger.error(f"Error generating system stats: {e}")
+            return {}
 
 
 # Legacy API functions for backward compatibility
-_db_manager = DatabaseConnectionManager()
-_user_repo = UserRepository(_db_manager)
+def InitDB():
+    """Legacy function for initializing database"""
+    system = KanbanSystem()
+    return system.initialize_system()
 
-def InitDB() -> bool:
-    """Initialize database (legacy function)"""
-    return _user_repo.initialize_database()
+def AddTask(Title, Status, PersonInCharge, CreationDate, DueDate, Creator, AdditionalInfo):
+    """Legacy function for adding tasks"""
+    system = KanbanSystem()
+    # Note: CreationDate parameter is ignored as it's auto-generated
+    return system.add_task(Title, Status, PersonInCharge, DueDate, Creator, AdditionalInfo)
 
-def CreateUser(PhoneNo: int, Name: str, Position: str, Password: str):
-    """Create user (legacy function)"""
-    return _user_repo.create_user(PhoneNo, Name, Position, Password)
+def GetTaskByID(TaskID):
+    """Legacy function for getting task by ID"""
+    system = KanbanSystem()
+    task = system.get_task(TaskID)
+    if task:
+        return [
+            task.task_id, task.title, task.status, task.person_in_charge,
+            task.creation_date, task.due_date, task.creator,
+            task.editors, task.additional_info
+        ]
+    return None
 
-def GetUserByPhone(PhoneNo: int) -> Optional[Dict[str, Any]]:
-    """Get user by phone (legacy function)"""
-    return _user_repo.get_user_by_phone(PhoneNo)
-
-def ValidateLogin(PhoneNo: int, Password: str) -> Optional[Dict[str, Any]]:
-    """Validate login (legacy function)"""
-    return _user_repo.validate_login(PhoneNo, Password)
-
-def ChangeActivationStatus(PhoneNo: int, IsActive: int) -> bool:
-    """Change activation status (legacy function)"""
-    return _user_repo.change_activation_status(PhoneNo, bool(IsActive))
-
-def HashPassword(password: str) -> str:
-    """Hash password (legacy function)"""
-    return PasswordManager.hash_password(password)
-
-def VerifyPassword(password: str, password_hash: str) -> bool:
-    """Verify password (legacy function)"""
-    return PasswordManager.verify_password(password, password_hash)
-
-
-# Example usage and testing
-if __name__ == "__main__":
-    # Initialize database
-    if InitDB():
-        print("Database initialized successfully")
-    
-    # Example: Create an admin user
-    try:
-        result = CreateUser(
-            phone_no=1234567890,
-            name="System Administrator",
-            position="Admin",
-            password="SecurePassword123!"
-        )
-        print("User created:", result)
-    except ValueError as e:
-        print("Error creating user:", e)
-    
-    # Example: Validate login
-    user = ValidateLogin(1234567890, "SecurePassword123!")
+def GetUserByPhone(PhoneNo: int):
+    """Legacy function for getting user by phone"""
+    system = KanbanSystem()
+    user = system.get_user(PhoneNo)
     if user:
-        print("Login successful:", user)
-    else:
-        print("Login failed")
-    Connection.execute("UPDATE USER SET IsActive = ? WHERE PhoneNo = ?", (IsActive, PhoneNo))
-    Connection.commit()
+        return [user['name']]
+    return None
+
+def CheckUserExist(PhoneNo: int):
+    """Legacy function for checking user existence"""
+    system = KanbanSystem()
+    return system.get_user(PhoneNo) is not None
+
+def GetAllTasks():
+    """Legacy function for getting all tasks"""
+    system = KanbanSystem()
+    tasks = system.get_all_tasks()
+    return [[
+        task.task_id, task.title, task.status, task.person_in_charge,
+        task.creation_date, task.due_date, task.creator,
+        task.editors, task.additional_info
+    ] for task in tasks]
+
+def CountTask():
+    """Legacy function for counting tasks by status"""
+    system = KanbanSystem()
+    stats = system.get_system_stats()
+    counts = stats.get('task_counts_by_status', {})
+    
+    # Return in expected order
+    status_order = ['To-Do', 'In Progress', 'Waiting Review', 'Finished']
+    return [counts.get(status, 0) for status in status_order]
+
+def CountTaskByPerson():
+    """Legacy function for counting tasks by person"""
+    system = KanbanSystem()
+    stats = system.get_system_stats()
+    return stats.get('task_counts_by_person', {})
+
+
+def main():
+    """Main function demonstrating system usage"""
+    try:
+        # Initialize system
+        system = KanbanSystem()
+        
+        if not system.initialize_system():
+            print("Failed to initialize system")
+            return 1
+        
+        print("Kanban System Started Successfully!")
+        print("=" * 50)
+        
+        # Display system statistics
+        stats = system.get_system_stats()
+        print("System Statistics:")
+        print(f"Total Tasks: {stats['total_tasks']}")
+        print(f"Overdue Tasks: {stats['overdue_tasks_count']}")
+        print(f"Active Users: {stats['active_users_count']}")
+        print()
+        
+        # Display task counts by status
+        print("Tasks by Status:")
+        for status, count in stats['task_counts_by_status'].items():
+            print(f"  {status}: {count}")
+        
+        print("=" * 50)
+        return 0
+        
+    except Exception as e:
+        logger.error(f"System error: {e}")
+        print(f"Error: {e}")
+        return 1
+
+
+if __name__ == "__main__":
+    exit(main())

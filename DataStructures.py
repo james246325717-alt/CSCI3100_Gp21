@@ -100,6 +100,6 @@ class KanbanBoard:
             if grouped_tasks[status]: 
                 print(f"\n{status.upper()}:")
                 for task in grouped_tasks[status]:
-                    print(f" - Task {task.ID}: {task.title} (Due: {task.DueDate}, Assigned to: {task.PersonInCharge})")
+                    print(f" - Task {task.ID}: {task.title} (Due: {task.DueDate}, Assigned to: {kdb.GetUserByPhone(task.PersonInCharge)})")
 
         print("\n" + "-"*50)

@@ -1,6 +1,7 @@
 import Database
 import CLI
 import Notification
+import KanbanInfoDatabase as kdb
 
 LOGIN_PAGE = """
 Kanban System Login Page
@@ -52,7 +53,11 @@ def Login():
 
         elif choice == "2":
             # Register
-            PhoneNo = int(input("Phone number: ").strip())
+            while True:
+                PhoneNo = int(input("Phone number: ").strip())
+                if not kdb.CheckUserExist(PhoneNo):
+                    break
+                else: print("Phone number already exist.")
             Name = input("Name: ").strip()
             while True:
                 Position = input("Position (Admin / User): ").strip().capitalize()

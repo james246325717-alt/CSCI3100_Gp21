@@ -70,7 +70,7 @@ def interactive_menu(store: str):
                 if kdb.CheckUserExist(PersonInCharge):
                     break
                 print("Person in charge does not exist.")
-            print(f"Pperson in charge: {kdb.GetUserByPhone(PersonInCharge)}")
+            print(f"Person in charge: {kdb.GetUserByPhone(PersonInCharge)}")
             DueDate = HandleDueDateInput(DefaultResponse="Undecided", Mandatory=False)
             while True:
                 try:
@@ -157,6 +157,9 @@ def interactive_menu(store: str):
                 continue
             try:
                 Temp = kdb.GetTaskByID(TaskID)
+                if Temp is None:
+                    print("Task not found.")
+                    continue
                 task = DataStructures.Task(Temp[1], Temp[2], Temp[3], Temp[5], Temp[6], Temp[8], Temp[4], Temp[7], Temp[0])
                 task.DisplayTask()
             except(IndexError):
@@ -174,7 +177,7 @@ def interactive_menu(store: str):
                 print(f"Attention: Work hard! There are {CountTask[1]} tasks in progress!")
             if CountTask[2] > 10:
                 print(f"Attention: Review Tasks! There are {CountTask[2]} tasks waiting for review!")
-            if CountTask[0] <= 10 and CountTask[0] <= 10 and CountTask[0] <= 10:
+            if CountTask[0] <= 10 and CountTask[1] <= 10 and CountTask[2] <= 10:
                 print("No further advice for Task Status. Keep Going!")
             CountTaskByPerson = kdb.CountTaskByPerson()
             OverLoadedPeople = [f"{key} ({value} Tasks)" for key, value in CountTaskByPerson.items() if value > 3]

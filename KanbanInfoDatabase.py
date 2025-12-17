@@ -78,7 +78,7 @@ def GetTaskByID(TaskID):
     Query = Connection.execute("SELECT * FROM KANBAN WHERE ID = ?", (TaskID,))
     Data = Query.fetchone()
     Connection.close()
-    return [Data[0], Data[1], Data[2], Data[3], Data[4], Data[5], Data[6], Data[7], Data[8]]
+    return [Data[0], Data[1], Data[2], Data[3], Data[4], Data[5], Data[6], Data[7], Data[8]] if Data else None
 
 def GetUserByPhone(PhoneNo: int):
     Connection = sqlite3.connect(DB_PATH)

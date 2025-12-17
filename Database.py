@@ -2,7 +2,7 @@ import sqlite3
 from pathlib import Path
 import bcrypt
 
-DB_PATH = Path("users.db")
+DB_PATH = Path("kanban.db")
 
 def InitDB():
     Connection = sqlite3.connect(DB_PATH)

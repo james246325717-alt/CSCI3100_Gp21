@@ -23,7 +23,7 @@ class Task:
         print("\n" + "-"*50)
         print(f"Task {self.ID}: {self.title}")
         print("-"*50)
-        print(f"Status: {self.Status} \nAssigned to: {self.PersonInCharge} \nCreationTime: {self.FormatDate(self.CreationDate)} \nDue: {self.DueDate} \nCreated by: {self.Creator} \nEditors: {self.Editors} \nAdditional Info: {self.AdditionalInfo}")
+        print(f"Status: {self.Status} \nAssigned to: {kdb.GetUserByPhone(self.PersonInCharge)} \nCreationTime: {self.FormatDate(self.CreationDate)} \nDue: {self.DueDate} \nCreated by: {kdb.GetUserByPhone(self.Creator)} \nEditors: {kdb.GetUserByPhone(self.Editors)} \nAdditional Info: {self.AdditionalInfo}")
         print("\n" + "-"*50)
     
     def __str__(self):

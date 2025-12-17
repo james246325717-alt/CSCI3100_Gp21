@@ -61,15 +61,25 @@ def interactive_menu(store: str):
                 print("Title cannot be empty.")
                 continue
             Status = HandleStatusInput(Mandatory=True)
-            PersonInCharge = input("Person in charge: ").strip()
-            if not PersonInCharge:
-                PersonInCharge = "None"
+            while True:
+                try:
+                    PersonInCharge = int(input("Person in charge: ").strip())
+                except(ValueError):
+                    print("Please enter a valid phone number.")
+                    continue
+                if kdb.CheckUserExist(PersonInCharge):
+                    break
+                print("Person in charge does not exist.")
             DueDate = HandleDueDateInput(DefaultResponse="Undecided", Mandatory=False)
             while True:
-                Creator = input("Creator: ").strip()
-                if Creator:
+                try:
+                    Creator = int(input("Creator: ").strip())
+                except(ValueError):
+                    print("Please enter a valid phone number.")
+                    continue
+                if kdb.CheckUserExist(Creator):
                     break
-                print("Creator cannot be empty.")
+                print("Creator does not exist.")
             AdditionalInfo = input("Additional information: ").strip()
             board.AddTask(Title, Status, PersonInCharge, DueDate, Creator, AdditionalInfo)
 
@@ -95,7 +105,11 @@ def interactive_menu(store: str):
             Editor = HandleEditorInput(Mandatory=True)
             Title = input("New title (blank to skip): ").strip() or None
             Status = HandleStatusInput(AdditionalText=" Blank: Skip", Mandatory=False)
-            PersonInCharge = input("New person in charge (blank to skip): ").strip() or None
+            while True:
+                PersonInCharge = int(input("Person in charge: ").strip())
+                if kdb.CheckUserExist(PersonInCharge):
+                    break
+                print("Person in charge does not exist.")
             DueDate = HandleDueDateInput(DefaultResponse=None, Mandatory=False)
             AdditionalInfo = input("New additional information (blank to skip): ").strip() or None
             board.EditTask(TaskID, Editor, NewTitle=Title, NewStatus=Status, NewPersonInCharge=PersonInCharge, NewDueDate=DueDate, NewAdditionalInfo=AdditionalInfo)
@@ -188,11 +202,13 @@ def InteractiveMenuAdmin(store: str):
 def HandleEditorInput(Mandatory=True):
     # Todo: Don't show Editor's name as None if Mandatory is False, instead show latest editor's name
     while True:
-        Editor = input("Name of Editor: ").strip() or None
+        Editor = input("Phone number of Editor: ").strip() or None
         if not Editor and Mandatory:
             print("Editor cannot be empty.")
+        elif kdb.CheckUserExist(Editor):
+            return Editor
         else:    
-            return Editor  
+            print("Editor does not exist.")
 
 def HandleStatusInput(Mandatory=True, AdditionalText=""):
     while True:  

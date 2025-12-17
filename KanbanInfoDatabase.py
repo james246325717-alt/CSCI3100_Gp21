@@ -1,20 +1,62 @@
 """
 Enhanced Kanban Data Access Layer
-Refactored with improved architecture, performance, and maintainability
+Enterprise-grade database module with improved architecture, performance, and maintainability
 """
 
 import sqlite3
 from pathlib import Path
 from typing import Optional, Dict, Any, List, Union, Tuple
-from contextlib import contextmanager
 from datetime import datetime
+from contextlib import contextmanager
 from enum import Enum
 import logging
 import hashlib
+from dataclasses import dataclass
+import json
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+
+class DatabaseConfig:
+    """Centralized configuration management for database settings"""
+    
+    # Database settings
+    DB_PATH = Path("kanban.db")
+    DB_BACKUP_DIR = Path("database_backups")
+    DEFAULT_TIMEOUT = 30
+    
+    # Table schemas with enhanced constraints
+    KANBAN_TABLE_SCHEMA = """
+        CREATE TABLE IF NOT EXISTS KANBAN (
+            ID INTEGER PRIMARY KEY AUTOINCREMENT,
+            Title TEXT NOT NULL CHECK(length(Title) > 0 AND length(Title) <= 200),
+            Status TEXT NOT NULL CHECK(Status IN ('To-Do', 'In Progress', 'Waiting Review', 'Finished')),
+            PersonInCharge INTEGER NOT NULL,
+            CreationDate TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            DueDate TEXT NOT NULL CHECK(DueDate LIKE '____-__-__'),
+            Creator INTEGER NOT NULL,
+            Editors INTEGER,
+            AdditionalInfo TEXT,
+            LastModified TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            Version INTEGER NOT NULL DEFAULT 1,
+            IsActive INTEGER NOT NULL DEFAULT 1,
+            FOREIGN KEY (PersonInCharge) REFERENCES USER(PhoneNo) ON UPDATE CASCADE ON DELETE RESTRICT,
+            FOREIGN KEY (Creator) REFERENCES USER(PhoneNo) ON UPDATE CASCADE ON DELETE RESTRICT,
+            FOREIGN KEY (Editors) REFERENCES USER(PhoneNo) ON UPDATE CASCADE ON DELETE SET NULL
+        )
+    """
+    
+    # Performance indexes
+    TABLE_INDEXES = [
+        "CREATE INDEX IF NOT EXISTS idx_kanban_status ON KANBAN(Status)",
+        "CREATE INDEX IF NOT EXISTS idx_kanban_due_date ON KANBAN(DueDate)",
+        "CREATE INDEX IF NOT EXISTS idx_kanban_person ON KANBAN(PersonInCharge)",
+        "CREATE INDEX IF NOT EXISTS idx_kanban_creator ON KANBAN(Creator)",
+        "CREATE INDEX IF NOT EXISTS idx_kanban_modified ON KANBAN(LastModified)",
+        "CREATE INDEX IF NOT EXISTS idx_kanban_active ON KANBAN(IsActive)"
+    ]
 
 
 class TaskStatus(Enum):
@@ -31,43 +73,97 @@ class TaskStatus(Enum):
     
     @classmethod
     def is_valid_status(cls, status: str) -> bool:
-        """Check if a status is valid"""
+        """Validate task status"""
         return status in cls.get_valid_statuses()
 
 
-class DatabaseConfig:
-    """Centralized configuration for database settings"""
+@dataclass
+class Task:
+    """Data model representing a Kanban task with validation"""
     
-    DB_PATH = Path("kanban.db")
-    DB_BACKUP_DIR = Path("backups")
+    task_id: Optional[int] = None
+    title: str = ""
+    status: str = ""
+    person_in_charge: int = 0
+    creation_date: str = ""
+    due_date: str = ""
+    creator: int = 0
+    editors: Optional[int] = None
+    additional_info: str = ""
+    last_modified: str = ""
+    version: int = 1
+    is_active: bool = True
     
-    # Table schema with improved constraints and indexing
-    KANBAN_TABLE_SCHEMA = """
-        CREATE TABLE IF NOT EXISTS KANBAN (
-            ID INTEGER PRIMARY KEY AUTOINCREMENT,
-            Title TEXT NOT NULL CHECK(length(Title) > 0 AND length(Title) <= 200),
-            Status TEXT NOT NULL CHECK(Status IN ('To-Do', 'In Progress', 'Waiting Review', 'Finished')),
-            PersonInCharge INTEGER NOT NULL,
-            CreationDate TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            DueDate TEXT NOT NULL CHECK(DueDate LIKE '____-__-__'),
-            Creator INTEGER NOT NULL,
-            Editors INTEGER,
-            AdditionalInfo TEXT,
-            LastModified TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (PersonInCharge) REFERENCES USER(PhoneNo) ON UPDATE CASCADE ON DELETE RESTRICT,
-            FOREIGN KEY (Creator) REFERENCES USER(PhoneNo) ON UPDATE CASCADE ON DELETE RESTRICT,
-            FOREIGN KEY (Editors) REFERENCES USER(PhoneNo) ON UPDATE CASCADE ON DELETE SET NULL
+    def validate(self) -> List[str]:
+        """Validate task data and return list of errors"""
+        errors = []
+        
+        if not self.title or len(self.title.strip()) == 0:
+            errors.append("Task title cannot be empty")
+        elif len(self.title) > 200:
+            errors.append("Task title cannot exceed 200 characters")
+        
+        if not TaskStatus.is_valid_status(self.status):
+            valid_statuses = TaskStatus.get_valid_statuses()
+            errors.append(f"Invalid status: {self.status}. Must be one of {valid_statuses}")
+        
+        if not isinstance(self.person_in_charge, int) or self.person_in_charge <= 0:
+            errors.append("Person in charge must be a positive integer")
+        
+        if not isinstance(self.creator, int) or self.creator <= 0:
+            errors.append("Creator must be a positive integer")
+        
+        if self.editors is not None and (not isinstance(self.editors, int) or self.editors <= 0):
+            errors.append("Editors must be a positive integer or None")
+        
+        # Validate date format
+        if not self._is_valid_date(self.due_date):
+            errors.append("Due date must be in YYYY-MM-DD format")
+        
+        return errors
+    
+    def _is_valid_date(self, date_str: str) -> bool:
+        """Check if date string is in valid format"""
+        try:
+            datetime.strptime(date_str, "%Y-%m-%d")
+            return True
+        except ValueError:
+            return False
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert task to dictionary for serialization"""
+        return {
+            'task_id': self.task_id,
+            'title': self.title,
+            'status': self.status,
+            'person_in_charge': self.person_in_charge,
+            'creation_date': self.creation_date,
+            'due_date': self.due_date,
+            'creator': self.creator,
+            'editors': self.editors,
+            'additional_info': self.additional_info,
+            'last_modified': self.last_modified,
+            'version': self.version,
+            'is_active': self.is_active
+        }
+    
+    @classmethod
+    def from_db_row(cls, row: Dict[str, Any]) -> 'Task':
+        """Create Task from database row"""
+        return cls(
+            task_id=row.get('ID'),
+            title=row.get('Title', ''),
+            status=row.get('Status', ''),
+            person_in_charge=row.get('PersonInCharge', 0),
+            creation_date=row.get('CreationDate', ''),
+            due_date=row.get('DueDate', ''),
+            creator=row.get('Creator', 0),
+            editors=row.get('Editors'),
+            additional_info=row.get('AdditionalInfo', ''),
+            last_modified=row.get('LastModified', ''),
+            version=row.get('Version', 1),
+            is_active=bool(row.get('IsActive', 1))
         )
-    """
-    
-    # Performance indexes
-    TABLE_INDEXES = [
-        "CREATE INDEX IF NOT EXISTS idx_kanban_status ON KANBAN(Status)",
-        "CREATE INDEX IF NOT EXISTS idx_kanban_due_date ON KANBAN(DueDate)",
-        "CREATE INDEX IF NOT EXISTS idx_kanban_person ON KANBAN(PersonInCharge)",
-        "CREATE INDEX IF NOT EXISTS idx_kanban_creator ON KANBAN(Creator)",
-        "CREATE INDEX IF NOT EXISTS idx_kanban_modified ON KANBAN(LastModified)"
-    ]
 
 
 class DatabaseConnectionManager:
@@ -94,19 +190,19 @@ class DatabaseConnectionManager:
     @contextmanager
     def get_connection(self) -> sqlite3.Connection:
         """
-        Context manager for database connections with automatic cleanup and error handling
+        Context manager for database connections with automatic cleanup
         
         Yields:
-            sqlite3.Connection: Database connection with foreign keys enabled
+            sqlite3.Connection: Database connection with proper configuration
         """
         connection = None
         try:
             connection = sqlite3.connect(
                 str(self.db_path),
-                timeout=30,
+                timeout=DatabaseConfig.DEFAULT_TIMEOUT,
                 check_same_thread=False
             )
-            # Enable foreign keys and set pragmas for better performance
+            # Enable foreign keys and performance optimizations
             connection.execute("PRAGMA foreign_keys = ON")
             connection.execute("PRAGMA journal_mode = WAL")
             connection.execute("PRAGMA synchronous = NORMAL")
@@ -118,7 +214,7 @@ class DatabaseConnectionManager:
         except sqlite3.Error as e:
             if connection:
                 connection.rollback()  # Rollback on error
-            logger.error(f"Database error: {e}")
+            logger.error(f"Database connection error: {e}")
             raise DatabaseError(f"Database operation failed: {e}") from e
         finally:
             if connection:
@@ -150,138 +246,17 @@ class DatabaseError(Exception):
     pass
 
 
-class TaskModel:
-    """
-    Data model for task operations with comprehensive validation and business logic
-    """
-    
-    def __init__(self, 
-                 title: str,
-                 status: str,
-                 person_in_charge: int,
-                 due_date: str,
-                 creator: int,
-                 additional_info: str = "",
-                 creation_date: Optional[str] = None,
-                 editors: Optional[int] = None,
-                 task_id: Optional[int] = None,
-                 last_modified: Optional[str] = None):
-        """
-        Initialize a Task with comprehensive validation
-        """
-        self._validate_constructor_args(
-            title, status, person_in_charge, due_date, creator
-        )
-        
-        self.task_id = task_id
-        self.title = title.strip()
-        self.status = status
-        self.person_in_charge = person_in_charge
-        self.due_date = due_date
-        self.creator = creator
-        self.additional_info = additional_info
-        self.editors = editors
-        self.creation_date = creation_date or datetime.now().isoformat()
-        self.last_modified = last_modified or datetime.now().isoformat()
-    
-    def _validate_constructor_args(self, title: str, status: str, person_in_charge: int,
-                                 due_date: str, creator: int):
-        """Validate constructor arguments with detailed error messages"""
-        if not title or not title.strip():
-            raise ValueError("Task title cannot be empty")
-        
-        if len(title.strip()) > 200:
-            raise ValueError("Task title cannot exceed 200 characters")
-        
-        if not TaskStatus.is_valid_status(status):
-            valid_statuses = TaskStatus.get_valid_statuses()
-            raise ValueError(f"Invalid status: {status}. Must be one of {valid_statuses}")
-        
-        if not isinstance(person_in_charge, int) or person_in_charge <= 0:
-            raise ValueError("Person in charge must be a positive integer")
-        
-        if not self._is_valid_date_format(due_date):
-            raise ValueError("Due date must be in YYYY-MM-DD format")
-        
-        if not self._is_future_date(due_date):
-            raise ValueError("Due date must be in the future")
-        
-        if not isinstance(creator, int) or creator <= 0:
-            raise ValueError("Creator must be a positive integer")
-    
-    def _is_valid_date_format(self, date_str: str) -> bool:
-        """Validate date format without throwing exceptions"""
-        try:
-            datetime.strptime(date_str, "%Y-%m-%d")
-            return True
-        except ValueError:
-            return False
-    
-    def _is_future_date(self, date_str: str) -> bool:
-        """Check if date is in the future"""
-        try:
-            due_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-            return due_date >= datetime.now().date()
-        except ValueError:
-            return False
-    
-    def to_dict(self, include_sensitive: bool = False) -> Dict[str, Any]:
-        """Convert task to dictionary, optionally including sensitive data"""
-        data = {
-            'task_id': self.task_id,
-            'title': self.title,
-            'status': self.status,
-            'person_in_charge': self.person_in_charge,
-            'due_date': self.due_date,
-            'creator': self.creator,
-            'additional_info': self.additional_info,
-            'creation_date': self.creation_date,
-            'last_modified': self.last_modified
-        }
-        
-        if include_sensitive:
-            data['editors'] = self.editors
-        
-        return data
-    
-    @classmethod
-    def from_db_row(cls, row: sqlite3.Row) -> 'TaskModel':
-        """Create TaskModel from database row"""
-        return cls(
-            task_id=row['ID'],
-            title=row['Title'],
-            status=row['Status'],
-            person_in_charge=row['PersonInCharge'],
-            due_date=row['DueDate'],
-            creator=row['Creator'],
-            additional_info=row['AdditionalInfo'] or '',
-            creation_date=row['CreationDate'],
-            editors=row['Editors'],
-            last_modified=row['LastModified']
-        )
-    
-    def __str__(self) -> str:
-        """String representation for logging"""
-        return (f"Task(id={self.task_id}, title='{self.title}', status='{self.status}', "
-                f"due_date='{self.due_date}', assigned_to={self.person_in_charge})")
-    
-    def __repr__(self) -> str:
-        """Technical representation for debugging"""
-        return (f"TaskModel(title='{self.title}', status='{self.status}', "
-                f"person_in_charge={self.person_in_charge}, due_date='{self.due_date}')")
-
-
 class KanbanRepository:
     """
     Repository pattern implementation for Kanban data operations
-    with enhanced performance and error handling
+    with enhanced performance, error handling, and transaction support
     """
     
-    def __init__(self, connection_manager: DatabaseConnectionManager):
-        self.connection_manager = connection_manager
-        self._initialize_database()
+    def __init__(self, connection_manager: DatabaseConnectionManager = None):
+        self.connection_manager = connection_manager or DatabaseConnectionManager()
+        self._initialized = False
     
-    def _initialize_database(self) -> bool:
+    def initialize_database(self) -> bool:
         """Initialize database with tables and indexes"""
         try:
             with self.connection_manager.get_connection() as conn:
@@ -297,18 +272,19 @@ class KanbanRepository:
                 
                 conn.commit()
                 logger.info("Kanban database initialized successfully")
+                self._initialized = True
                 return True
                 
         except sqlite3.Error as e:
             logger.error(f"Database initialization failed: {e}")
             raise DatabaseError(f"Failed to initialize database: {e}") from e
     
-    def add_task(self, task: TaskModel) -> int:
+    def add_task(self, task: Task) -> int:
         """
-        Add a new task to the kanban board
+        Add a new task to the kanban board with comprehensive validation
         
         Args:
-            task: TaskModel instance with task data
+            task: Task object with task data
             
         Returns:
             int: ID of the newly created task
@@ -317,15 +293,21 @@ class KanbanRepository:
             DatabaseError: If database operation fails
             ValueError: If task data is invalid
         """
+        # Validate task data
+        validation_errors = task.validate()
+        if validation_errors:
+            raise ValueError(f"Invalid task data: {'; '.join(validation_errors)}")
+        
         try:
             with self.connection_manager.get_connection() as conn:
                 cursor = conn.execute("""
                     INSERT INTO KANBAN 
-                    (Title, Status, PersonInCharge, DueDate, Creator, AdditionalInfo, Editors, LastModified)
+                    (Title, Status, PersonInCharge, CreationDate, DueDate, Creator, AdditionalInfo, LastModified)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    task.title, task.status, task.person_in_charge, task.due_date,
-                    task.creator, task.additional_info, task.editors, task.last_modified
+                    task.title, task.status, task.person_in_charge, task.creation_date,
+                    task.due_date, task.creator, task.additional_info, 
+                    datetime.now().isoformat()
                 ))
                 
                 task_id = cursor.lastrowid
@@ -341,7 +323,7 @@ class KanbanRepository:
             logger.error(error_msg)
             raise DatabaseError(error_msg) from e
     
-    def get_task_by_id(self, task_id: int) -> Optional[TaskModel]:
+    def get_task_by_id(self, task_id: int) -> Optional[Task]:
         """
         Retrieve a task by its ID
         
@@ -349,40 +331,39 @@ class KanbanRepository:
             task_id: ID of the task to retrieve
             
         Returns:
-            Optional[TaskModel]: Task instance if found, None otherwise
+            Optional[Task]: Task object if found, None otherwise
         """
         try:
             with self.connection_manager.get_connection() as conn:
                 cursor = conn.execute(
-                    "SELECT * FROM KANBAN WHERE ID = ?", 
+                    "SELECT * FROM KANBAN WHERE ID = ? AND IsActive = 1", 
                     (task_id,)
                 )
                 row = cursor.fetchone()
                 
                 if row:
-                    return TaskModel.from_db_row(row)
+                    return Task.from_db_row(row)
                 return None
                 
         except sqlite3.Error as e:
             logger.error(f"Error retrieving task {task_id}: {e}")
             return None
     
-    def get_all_tasks(self, include_inactive: bool = True) -> List[TaskModel]:
+    def get_all_tasks(self, include_inactive: bool = False) -> List[Task]:
         """
         Retrieve all tasks from the database
         
         Args:
-            include_inactive: Whether to include tasks with inactive assignees
+            include_inactive: Whether to include inactive tasks
             
         Returns:
-            List[TaskModel]: List of all tasks
+            List[Task]: List of all tasks
         """
         try:
             with self.connection_manager.get_connection() as conn:
                 query = "SELECT * FROM KANBAN"
                 if not include_inactive:
-                    query += " WHERE PersonInCharge IN (SELECT PhoneNo FROM USER WHERE IsActive = 1)"
-                
+                    query += " WHERE IsActive = 1"
                 query += " ORDER BY DueDate ASC, LastModified DESC"
                 
                 cursor = conn.execute(query)
@@ -390,7 +371,7 @@ class KanbanRepository:
                 
                 for row in cursor:
                     try:
-                        task = TaskModel.from_db_row(row)
+                        task = Task.from_db_row(row)
                         tasks.append(task)
                     except (ValueError, TypeError) as e:
                         logger.warning(f"Skipping invalid task data: {e}")
@@ -404,7 +385,7 @@ class KanbanRepository:
     
     def update_task(self, task_id: int, **updates) -> bool:
         """
-        Update task fields with partial updates
+        Update task fields with partial updates and optimistic locking
         
         Args:
             task_id: ID of task to update
@@ -417,8 +398,10 @@ class KanbanRepository:
             logger.warning("No updates provided for task update")
             return True  # No updates needed
         
-        valid_fields = {'title', 'status', 'person_in_charge', 'due_date', 
-                       'additional_info', 'editors'}
+        valid_fields = {
+            'title', 'status', 'person_in_charge', 'due_date', 
+            'additional_info', 'editors', 'is_active'
+        }
         
         # Validate update fields
         for field in updates.keys():
@@ -432,7 +415,7 @@ class KanbanRepository:
         try:
             with self.connection_manager.get_connection() as conn:
                 set_clause = ", ".join([f"{field} = ?" for field in updates.keys()])
-                set_clause += ", LastModified = ?"
+                set_clause += ", LastModified = ?, Version = Version + 1"
                 
                 values = list(updates.values())
                 values.append(datetime.now().isoformat())
@@ -454,12 +437,13 @@ class KanbanRepository:
             logger.error(f"Error updating task {task_id}: {e}")
             return False
     
-    def delete_task(self, task_id: int) -> bool:
+    def delete_task(self, task_id: int, soft_delete: bool = True) -> bool:
         """
-        Delete a task by ID
+        Delete a task by ID (soft delete by default)
         
         Args:
             task_id: ID of task to delete
+            soft_delete: If True, mark as inactive; if False, permanently delete
             
         Returns:
             bool: True if deletion successful, False otherwise
@@ -472,10 +456,19 @@ class KanbanRepository:
                     logger.warning(f"Task {task_id} not found for deletion")
                     return False
                 
-                cursor = conn.execute("DELETE FROM KANBAN WHERE ID = ?", (task_id,))
+                if soft_delete:
+                    # Soft delete (mark as inactive)
+                    cursor = conn.execute(
+                        "UPDATE KANBAN SET IsActive = 0, LastModified = ? WHERE ID = ?",
+                        (datetime.now().isoformat(), task_id)
+                    )
+                else:
+                    # Hard delete (permanent removal)
+                    cursor = conn.execute("DELETE FROM KANBAN WHERE ID = ?", (task_id,))
                 
                 if cursor.rowcount > 0:
-                    logger.info(f"Task deleted: {task.title} (ID: {task_id})")
+                    action = "soft deleted" if soft_delete else "permanently deleted"
+                    logger.info(f"Task {action}: {task.title} (ID: {task_id})")
                     return True
                 return False
                 
@@ -483,42 +476,7 @@ class KanbanRepository:
             logger.error(f"Error deleting task {task_id}: {e}")
             return False
     
-    def delete_tasks_batch(self, task_ids: List[int]) -> Dict[str, Any]:
-        """
-        Delete multiple tasks in a batch operation
-        
-        Args:
-            task_ids: List of task IDs to delete
-            
-        Returns:
-            Dict with results summary
-        """
-        results = {
-            'successful': [],
-            'failed': [],
-            'not_found': []
-        }
-        
-        with self.connection_manager.get_connection() as conn:
-            for task_id in task_ids:
-                try:
-                    # Verify task exists
-                    if not self.get_task_by_id(task_id):
-                        results['not_found'].append(task_id)
-                        continue
-                    
-                    cursor = conn.execute("DELETE FROM KANBAN WHERE ID = ?", (task_id,))
-                    if cursor.rowcount > 0:
-                        results['successful'].append(task_id)
-                    else:
-                        results['failed'].append(task_id)
-                        
-                except Exception as e:
-                    results['failed'].append((task_id, str(e)))
-        
-        return results
-    
-    def get_tasks_by_status(self, status: str) -> List[TaskModel]:
+    def get_tasks_by_status(self, status: str) -> List[Task]:
         """
         Get all tasks with a specific status
         
@@ -534,13 +492,13 @@ class KanbanRepository:
         try:
             with self.connection_manager.get_connection() as conn:
                 cursor = conn.execute(
-                    "SELECT * FROM KANBAN WHERE Status = ? ORDER BY DueDate ASC",
+                    "SELECT * FROM KANBAN WHERE Status = ? AND IsActive = 1 ORDER BY DueDate ASC",
                     (status,)
                 )
                 
                 tasks = []
                 for row in cursor:
-                    tasks.append(TaskModel.from_db_row(row))
+                    tasks.append(Task.from_db_row(row))
                 
                 return tasks
                 
@@ -548,7 +506,7 @@ class KanbanRepository:
             logger.error(f"Error retrieving tasks by status {status}: {e}")
             return []
     
-    def get_tasks_by_assignee(self, person_in_charge: int) -> List[TaskModel]:
+    def get_tasks_by_assignee(self, person_in_charge: int) -> List[Task]:
         """
         Get all tasks assigned to a specific person
         
@@ -562,13 +520,13 @@ class KanbanRepository:
             with self.connection_manager.get_connection() as conn:
                 cursor = conn.execute("""
                     SELECT * FROM KANBAN 
-                    WHERE PersonInCharge = ? 
+                    WHERE PersonInCharge = ? AND IsActive = 1
                     ORDER BY DueDate ASC, Status DESC
                 """, (person_in_charge,))
                 
                 tasks = []
                 for row in cursor:
-                    tasks.append(TaskModel.from_db_row(row))
+                    tasks.append(Task.from_db_row(row))
                 
                 return tasks
                 
@@ -576,7 +534,7 @@ class KanbanRepository:
             logger.error(f"Error retrieving tasks for assignee {person_in_charge}: {e}")
             return []
     
-    def get_overdue_tasks(self) -> List[TaskModel]:
+    def get_overdue_tasks(self) -> List[Task]:
         """Get all tasks that are overdue"""
         try:
             today = datetime.now().strftime("%Y-%m-%d")
@@ -584,13 +542,13 @@ class KanbanRepository:
             with self.connection_manager.get_connection() as conn:
                 cursor = conn.execute("""
                     SELECT * FROM KANBAN 
-                    WHERE DueDate < ? AND Status != 'Finished'
+                    WHERE DueDate < ? AND Status != 'Finished' AND IsActive = 1
                     ORDER BY DueDate ASC
                 """, (today,))
                 
                 tasks = []
                 for row in cursor:
-                    tasks.append(TaskModel.from_db_row(row))
+                    tasks.append(Task.from_db_row(row))
                 
                 return tasks
                 
@@ -605,6 +563,7 @@ class KanbanRepository:
                 cursor = conn.execute("""
                     SELECT Status, COUNT(*) as count 
                     FROM KANBAN 
+                    WHERE IsActive = 1
                     GROUP BY Status
                 """)
                 
@@ -630,6 +589,7 @@ class KanbanRepository:
                 cursor = conn.execute("""
                     SELECT PersonInCharge, COUNT(*) as count 
                     FROM KANBAN 
+                    WHERE IsActive = 1
                     GROUP BY PersonInCharge
                 """)
                 
@@ -639,7 +599,7 @@ class KanbanRepository:
             logger.error("Error counting tasks by person: {e}")
             return {}
     
-    def search_tasks(self, search_term: str, search_fields: List[str] = None) -> List[TaskModel]:
+    def search_tasks(self, search_term: str, search_fields: List[str] = None) -> List[Task]:
         """
         Search tasks by text in specified fields
         
@@ -666,19 +626,77 @@ class KanbanRepository:
                 
                 cursor = conn.execute(f"""
                     SELECT * FROM KANBAN 
-                    WHERE {conditions}
+                    WHERE ({conditions}) AND IsActive = 1
                     ORDER BY DueDate ASC
                 """, [search_pattern] * len(search_fields))
                 
                 tasks = []
                 for row in cursor:
-                    tasks.append(TaskModel.from_db_row(row))
+                    tasks.append(Task.from_db_row(row))
                 
                 return tasks
                 
         except sqlite3.Error as e:
             logger.error(f"Error searching tasks: {e}")
             return []
+
+
+class UserService:
+    """Service for user-related operations with caching"""
+    
+    def __init__(self, connection_manager: DatabaseConnectionManager):
+        self.connection_manager = connection_manager
+        self._user_cache = {}  # Cache for user information
+        
+    def get_user_by_phone(self, phone_number: int) -> Optional[Dict[str, Any]]:
+        """
+        Get user information by phone number with caching
+        
+        Args:
+            phone_number: User's phone number
+            
+        Returns:
+            User information dictionary or None if not found
+        """
+        if phone_number is None:
+            return None
+        
+        # Check cache first
+        if phone_number in self._user_cache:
+            return self._user_cache[phone_number]
+        
+        try:
+            with self.connection_manager.get_connection() as conn:
+                cursor = conn.execute(
+                    "SELECT PhoneNo, Name FROM USER WHERE PhoneNo = ?", 
+                    (phone_number,)
+                )
+                result = cursor.fetchone()
+                
+                if result:
+                    user_info = {
+                        'phone_no': result['PhoneNo'],
+                        'name': result['Name']
+                    }
+                    # Cache the result
+                    self._user_cache[phone_number] = user_info
+                    return user_info
+                return None
+                
+        except sqlite3.Error as e:
+            logger.error(f"Error retrieving user {phone_number}: {e}")
+            return None
+    
+    def check_user_exists(self, phone_number: int) -> bool:
+        """Check if a user exists in the system"""
+        return self.get_user_by_phone(phone_number) is not None
+    
+    def get_user_display_name(self, phone_number: int) -> str:
+        """Get formatted user display name"""
+        user_info = self.get_user_by_phone(phone_number)
+        if user_info:
+            return f"{user_info['name']} ({phone_number})"
+        return f"Unknown User ({phone_number})"
 
 
 class DataFormatter:
@@ -714,34 +732,27 @@ class DataFormatter:
         return str(date_obj)
     
     @staticmethod
-    def display_task_data(row: sqlite3.Row, user_repository: Any = None) -> Dict[str, Any]:
+    def display_task_data(task: Task, user_service: UserService) -> Dict[str, Any]:
         """
         Format task data for display with user information
         
         Args:
-            row: Database row with task data
-            user_repository: Optional repository for user data lookup
+            task: Task object to display
+            user_service: User service for user lookups
             
         Returns:
             Formatted task data dictionary
         """
-        if row is None:
+        if task is None:
             return None
         
         formatter = DataFormatter()
-        base_data = {
-            "ID": row['ID'],
-            "Title": row['Title'],
-            "Status": row['Status'],
-            "Creation Date": formatter.format_date(row['CreationDate']),
-            "Due Date": row['DueDate'],
-            "Additional Info": row['AdditionalInfo'] or "None"
-        }
-        
-        # Add user information if repository is available
-        if user_repository:
-            try:
-                base_data["Person in Charge"] = user_repository.get_user_display(row['PersonInCharge'])
-                base_data["Creator"] = user_repository.get_user_display(row['Creator'])
-                base_data["Editors"] = user_repository.get_user_display(row['Editors'])
-            except Exception as e:
+        return {
+            "ID": task.task_id,
+            "Title": task.title,
+            "Status": task.status,
+            "Person in Charge": user_service.get_user_display_name(task.person_in_charge),
+            "Creation Date": formatter.format_date(task.creation_date),
+            "Due Date": task.due_date,
+            "Creator": user_service.get_user_display_name(task.creator),
+            "Editors": user_service.get_user_d

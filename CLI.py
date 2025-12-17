@@ -27,7 +27,7 @@ Choose an option by number:
 """
 
 HELP_TEXT = """
-Quick help:
+Quick help: Please read the user manual!
 
 """
 
@@ -158,7 +158,31 @@ def interactive_menu(store: str):
         
         elif choice == "7":
             #Advise
-            return
+            CountTask = kdb.CountTask()
+            print("\n" + "-"*50)
+            print(f"{'Advice':^50}")
+            print("-"*50)
+            if CountTask[0] > 10:
+                print(f"Attention: Do more tasks! There are {CountTask[0]} to-do Tasks!")
+            if CountTask[1] > 10:
+                print(f"Attention: Work hard! There are {CountTask[1]} tasks in progress!")
+            if CountTask[2] > 10:
+                print(f"Attention: Review Tasks! There are {CountTask[2]} tasks waiting for review!")
+            if CountTask[0] <= 10 and CountTask[0] <= 10 and CountTask[0] <= 10:
+                print("No further advice for Task Status. Keep Going!")
+            CountTaskByPerson = kdb.CountTaskByPerson()
+            OverLoadedPeople = [f"{key} ({value} Tasks)" for key, value in CountTaskByPerson.items() if value > 3]
+            ChillPeople = [f"{key} ({value} Task(s))" for key, value in CountTaskByPerson.items() if value < 3]
+            print("-"*50)
+            if OverLoadedPeople:
+                print(f"Attention: Too much work for {', '.join(OverLoadedPeople)}!\n           Try to re-distribute tasks!\n")
+            else:
+                print("No one is overloaded. Keep going!")
+            if ChillPeople:
+                print(f"Attention: Try to give some tasks to {', '.join(ChillPeople)}!")
+            else:
+                print("Attention: No one is available for more tasks!")
+            print("\n" + "-"*50)
 
         elif choice == "h":
             print(HELP_TEXT.strip())

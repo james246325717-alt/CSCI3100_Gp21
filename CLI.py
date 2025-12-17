@@ -61,27 +61,9 @@ def interactive_menu(store: str):
                 print("Title cannot be empty.")
                 continue
             Status = HandleStatusInput(Mandatory=True)
-            while True:
-                try:
-                    PersonInCharge = int(input("Person in charge: ").strip())
-                except(ValueError):
-                    print("Please enter a valid phone number.")
-                    continue
-                if kdb.CheckUserExist(PersonInCharge):
-                    break
-                print("Person in charge does not exist.")
-            print(f"Person in charge: {kdb.GetUserByPhone(PersonInCharge)}")
+            PersonInCharge = HandlePersonInChargeInput(Mandatory=True, DefaultResponse="Undecided")
             DueDate = HandleDueDateInput(DefaultResponse="Undecided", Mandatory=False)
-            while True:
-                try:
-                    Creator = int(input("Creator: ").strip())
-                except(ValueError):
-                    print("Please enter a valid phone number.")
-                    continue
-                if kdb.CheckUserExist(Creator):
-                    break
-                print("Creator does not exist.")
-            print(f"Creator: {kdb.GetUserByPhone(Creator)}")
+            Creator = HandleCreatorInput(Mandatory=True, DefaultResponse="Unknown")
             AdditionalInfo = input("Additional information: ").strip()
             board.AddTask(Title, Status, PersonInCharge, DueDate, Creator, AdditionalInfo)
 
@@ -93,8 +75,7 @@ def interactive_menu(store: str):
                 print("Please enter a valid number.")
                 continue
             Editor = HandleEditorInput(Mandatory=True)
-            print(f"Editor: {kdb.GetUserByPhone(Editor)}")
-            Status = HandleStatusInput(AdditionalText=" Blank: Cancel", Mandatory=False)
+            Status = HandleStatusInput(AdditionalText="Blank: Cancel", Mandatory=False)
 
             board.EditTask(TaskID, Editor, NewStatus=Status)
 
@@ -106,20 +87,9 @@ def interactive_menu(store: str):
                 print("Please enter a valid number.")
                 continue
             Editor = HandleEditorInput(Mandatory=True)
-            print(f"Editor: {kdb.GetUserByPhone(Editor)}")
             Title = input("New title (blank to skip): ").strip() or None
-            Status = HandleStatusInput(AdditionalText=" Blank: Skip", Mandatory=False)
-            while True:
-                try:
-                    PersonInCharge = int(input("Person in charge: ").strip()) or None
-                    if PersonInCharge is None:
-                        break
-                except(ValueError):
-                    print("Please enter a valid phone number.")
-                    continue 
-                if kdb.CheckUserExist(PersonInCharge):
-                    break
-                print("Person in charge does not exist.")
+            Status = HandleStatusInput(AdditionalText="Blank: Skip", Mandatory=False)
+            PersonInCharge = HandlePersonInChargeInput(Mandatory=False, DefaultResponse=None)
             DueDate = HandleDueDateInput(DefaultResponse=None, Mandatory=False)
             AdditionalInfo = input("New additional information (blank to skip): ").strip() or None
             board.EditTask(TaskID, Editor, NewTitle=Title, NewStatus=Status, NewPersonInCharge=PersonInCharge, NewDueDate=DueDate, NewAdditionalInfo=AdditionalInfo)
@@ -236,21 +206,69 @@ def InteractiveMenuAdmin(store: str):
         else:
             print("Invalid choice. Please enter a number from the menu.")
 
-def HandleEditorInput(Mandatory=True):
-    # Todo: Don't show Editor's name as None if Mandatory is False, instead show latest editor's name
+def HandlePersonInChargeInput(Mandatory=True, DefaultResponse="Undecided"):
     while True:
-        Editor = input("Phone number of Editor: ").strip() or None
-        if not Editor and Mandatory:
-            print("Editor cannot be empty.")
-        elif not Mandatory:
+        try:
+            PersonInCharge = input("Person in charge: ").strip() or None
+            if not PersonInCharge and not Mandatory:
+                PersonInCharge = DefaultResponse
+                return PersonInCharge
+            else:
+                PersonInCharge = int(PersonInCharge)
+        except(ValueError):
+            print("Please enter a valid phone number.")
+            continue
+        if kdb.CheckUserExist(PersonInCharge):
             break
-        elif kdb.CheckUserExist(Editor):
-            return Editor
-        else:
-            print("Editor does not exist.")
+        print("Person in charge does not exist.")
+    print(f"Person in charge: {kdb.GetUserByPhone(PersonInCharge)}")
+    return PersonInCharge
+
+def HandleCreatorInput(Mandatory=True, DefaultResponse="Unknown"):
+    while True:
+        try:
+            Creator = input("Creator: ").strip() or None
+            if not Creator and not Mandatory:
+                Creator = DefaultResponse
+                return Creator
+            elif not Creator and Mandatory:
+                print("Creator cannot be empty.")
+                continue
+            else:
+                Creator = int(Creator)
+        except(ValueError):
+            print("Please enter a valid phone number.")
+            continue
+        if kdb.CheckUserExist(Creator):
+            break
+        print("Creator does not exist.")
+    print(f"Creator: {kdb.GetUserByPhone(Creator)}")
+    return Creator
+
+def HandleEditorInput(Mandatory=True, DefaultResponse="Unknown"):
+    while True:
+        try:
+            Editor = input("Editor: ").strip() or None
+            if not Editor and not Mandatory:
+                Editor = DefaultResponse
+                return Editor
+            elif not Editor and Mandatory:
+                print("Editor cannot be empty.")
+            else:
+                Editor = int(Editor)
+        except(ValueError):
+            print("Please enter a valid phone number.")
+            continue
+        if kdb.CheckUserExist(Editor):
+            break
+        print("Editor does not exist.")
+    print(f"Editor: {kdb.GetUserByPhone(Editor)}")
+    return Editor
 
 def HandleStatusInput(Mandatory=True, AdditionalText=""):
     while True:  
+        if AdditionalText != "":
+            AdditionalText = " " + AdditionalText
         StatusInput = input(f"New status (1: To-Do 2: In Progress 3: Waiting Review 4: Finished{AdditionalText}): ").strip()
         if not Mandatory and not StatusInput:
             return None

@@ -2,6 +2,7 @@ import DataStructures
 from pathlib import Path
 import Database
 import KanbanInfoDatabase as kdb
+from datetime import datetime
 
 MENU_SCREENS = """
 Kanban - Main Menu
@@ -292,6 +293,7 @@ def HandleStatusInput(Mandatory=True, AdditionalText=""):
 
 def HandleDueDateInput(Mandatory=True, DefaultResponse=None):
     #Todo: Add validation for real calendar date?
+    Today = datetime.today().date()
     while True:
         DueDateInput = input("Due date (YYYY-MM-DD): ").strip() or None
         if DueDateInput:
@@ -300,11 +302,21 @@ def HandleDueDateInput(Mandatory=True, DefaultResponse=None):
                 parts[0].isdigit() and len(parts[0]) == 4 and  # Year
                 parts[1].isdigit() and len(parts[1]) == 2 and  # Month
                 parts[2].isdigit() and len(parts[2]) == 2):    # Day
-                return DueDateInput
+                try:
+                    year, month, day = map(int, parts)
+                    DueDate = datetime(year, month, day).date()
+                    if DueDate >= Today:
+                        return DueDateInput
+                    else:
+                        print("Date has already passed.")
+                except ValueError:
+                    print("Invalid date.")
             else:
                 print("Invalid date format.")
         elif not Mandatory:
             return DefaultResponse
+        else:
+            print("Due Date cannot be empty")
 
 """
 def main(argv=None):
